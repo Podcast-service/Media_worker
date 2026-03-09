@@ -1,0 +1,38 @@
+name: Media_worker CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    types:
+      - opened
+      - synchronize
+      - closed
+
+jobs:
+  media_worker:
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login
+        if: github.event.pull_request.merged == true
+        run: |
+          echo "${{ secrets.DOCKERHUB_PASSWORD }}" | \
+          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build
+        run: docker build -t malblsh/media_worker:latest .
+
+      - name: Push
+        if: github.event.pull_request.merged == true
+        run: docker push malblsh/media_worker:latest
+
+      - name: Trigger deploy
+        if: github.event.pull_request.merged == true
+        run: |
+          curl -X POST \
+          -H "Authorization: token ${{ secrets.DEPLOY_REPO_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/Podcast-service/Podcast_Service/dispatches \
+          -d '{"event_type":"deploy","client_payload":{"service":"media_worker"}}'
