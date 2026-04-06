@@ -122,7 +122,7 @@ async fn execute_pipeline(
     let input = PathBuf::from(temp_path);
 
     if !input.exists() {
-        return Err(format!("Временный файл не найден: {}", temp_path));
+        return Err(format!("Temporary file not found: {}", temp_path));
     }
 
     // ── 1. Нормализация громкости (loudnorm) ───────────────────────────
@@ -148,7 +148,7 @@ async fn execute_pipeline(
             .await
             .map_err(|e| format!("HLS task panicked: {}", e))?;
 
-    let hls_output = hls_result.map_err(|e| format!("HLS конвертация: {}", e))?;
+    let hls_output = hls_result.map_err(|e| format!("HLS conversion failed: {}", e))?;
 
     set_progress(progress, file_id, WorkerStage::Converting, 70, None);
 
@@ -169,12 +169,12 @@ async fn execute_pipeline(
     storage
         .ensure_bucket(HLS_BUCKET)
         .await
-        .map_err(|e| format!("Не удалось создать бакет: {}", e))?;
+        .map_err(|e| format!("Failed to create bucket: {}", e))?;
 
     storage
         .upload_hls_output(&hls_output, HLS_BUCKET, &upload_prefix)
         .await
-        .map_err(|e| format!("Ошибка загрузки в хранилище: {}", e))?;
+        .map_err(|e| format!("Error uploading to storage: {}", e))?;
 
     let hls_path = format!("/media/{}/{}", file_id, hls_output.playlist_name);
     let duration = hls_output.duration_secs.unwrap_or(0.0);
@@ -211,7 +211,7 @@ fn normalize_loudness(input_path: &Path) -> Result<PathBuf, String> {
     apply_loudness_normalization(input_str, output_str, &stats)?;
 
     if !output_path.exists() {
-        return Err("ffmpeg не создал нормализованный файл".to_string());
+        return Err("ffmpeg did not create normalized file".to_string());
     }
 
     info!(
@@ -237,7 +237,7 @@ fn measure_loudness(input_str: &str) -> Result<LoudnormStats, String> {
             "-",
         ])
         .output()
-        .map_err(|e| format!("Не удалось запустить ffmpeg loudnorm first pass: {}", e))?;
+        .map_err(|e| format!("Failed to start ffmpeg loudnorm first pass: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -254,7 +254,7 @@ fn measure_loudness(input_str: &str) -> Result<LoudnormStats, String> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let json = extract_loudnorm_json(&stderr)?;
     serde_json::from_str::<LoudnormStats>(&json)
-        .map_err(|e| format!("Не удалось распарсить loudnorm first pass output: {}", e))
+        .map_err(|e| format!("Failed to parse loudnorm first pass output: {}", e))
 }
 
 fn apply_loudness_normalization(
@@ -278,7 +278,7 @@ fn apply_loudness_normalization(
             output_str,
         ])
         .output()
-        .map_err(|e| format!("Не удалось запустить ffmpeg loudnorm second pass: {}", e))?;
+        .map_err(|e| format!("Failed to start ffmpeg loudnorm second pass: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
