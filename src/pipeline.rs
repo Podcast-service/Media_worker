@@ -16,6 +16,13 @@ const MAX_RETRIES: u32 = 3;
 const LOUDNORM_TARGET_I: &str = "-16";
 const LOUDNORM_TARGET_TP: &str = "-1.5";
 const LOUDNORM_TARGET_LRA: &str = "11";
+const FFMPEG_LOG_LEVEL: &str = "error";
+const FFMPEG_HIDE_BANNER_FLAG: &str = "-hide_banner";
+const FFMPEG_NO_STATS_FLAG: &str = "-nostats";
+const FFMPEG_NULL_FORMAT: &str = "null";
+const NORMALIZED_SAMPLE_RATE: &str = "48000";
+const NORMALIZED_CHANNELS: &str = "2";
+const OVERWRITE_OUTPUT_FLAG: &str = "-y";
 
 pub struct PipelineResult {
     pub hls_path: String,
@@ -224,18 +231,10 @@ fn normalize_loudness(input_path: &Path) -> Result<PathBuf, String> {
 }
 
 fn measure_loudness(input_str: &str) -> Result<LoudnormStats, String> {
+    let filter = build_measure_loudnorm_filter();
+    let args = build_measure_loudnorm_args(input_str, &filter);
     let output = Command::new("ffmpeg")
-        .args([
-            "-i",
-            input_str,
-            "-hide_banner",
-            "-nostats",
-            "-af",
-            &build_measure_loudnorm_filter(),
-            "-f",
-            "null",
-            "-",
-        ])
+        .args(&args)
         .output()
         .map_err(|e| format!("Failed to start ffmpeg loudnorm first pass: {}", e))?;
 
@@ -262,21 +261,10 @@ fn apply_loudness_normalization(
     output_str: &str,
     stats: &LoudnormStats,
 ) -> Result<(), String> {
+    let filter = build_second_pass_loudnorm_filter(stats);
+    let args = build_apply_loudnorm_args(input_str, output_str, &filter);
     let output = Command::new("ffmpeg")
-        .args([
-            "-i",
-            input_str,
-            "-v",
-            "error",
-            "-af",
-            &build_second_pass_loudnorm_filter(stats),
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-y",
-            output_str,
-        ])
+        .args(&args)
         .output()
         .map_err(|e| format!("Failed to start ffmpeg loudnorm second pass: {}", e))?;
 
@@ -293,6 +281,37 @@ fn apply_loudness_normalization(
     }
 
     Ok(())
+}
+
+fn build_measure_loudnorm_args(input_str: &str, filter: &str) -> Vec<String> {
+    vec![
+        "-i".to_string(),
+        input_str.to_string(),
+        FFMPEG_HIDE_BANNER_FLAG.to_string(),
+        FFMPEG_NO_STATS_FLAG.to_string(),
+        "-af".to_string(),
+        filter.to_string(),
+        "-f".to_string(),
+        FFMPEG_NULL_FORMAT.to_string(),
+        "-".to_string(),
+    ]
+}
+
+fn build_apply_loudnorm_args(input_str: &str, output_str: &str, filter: &str) -> Vec<String> {
+    vec![
+        "-i".to_string(),
+        input_str.to_string(),
+        "-v".to_string(),
+        FFMPEG_LOG_LEVEL.to_string(),
+        "-af".to_string(),
+        filter.to_string(),
+        "-ar".to_string(),
+        NORMALIZED_SAMPLE_RATE.to_string(),
+        "-ac".to_string(),
+        NORMALIZED_CHANNELS.to_string(),
+        OVERWRITE_OUTPUT_FLAG.to_string(),
+        output_str.to_string(),
+    ]
 }
 
 fn build_measure_loudnorm_filter() -> String {

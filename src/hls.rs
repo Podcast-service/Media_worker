@@ -6,6 +6,17 @@ use uuid::Uuid;
 use tracing::warn;
 
 const BITRATES: &[(u32, &str)] = &[(64, "64k"), (128, "128k"), (256, "256k")];
+const VARIANT_PLAYLIST_FILE: &str = "playlist.m3u8";
+const SEGMENT_FILE_PATTERN: &str = "seg_%05d.m4s";
+const FFMPEG_LOG_LEVEL: &str = "error";
+const HLS_AUDIO_CODEC: &str = "aac";
+const HLS_AUDIO_CHANNELS: &str = "2";
+const HLS_AUDIO_SAMPLE_RATE: &str = "48000";
+const HLS_FORMAT: &str = "hls";
+const HLS_SEGMENT_DURATION: &str = "6";
+const HLS_PLAYLIST_TYPE: &str = "vod";
+const HLS_SEGMENT_TYPE: &str = "fmp4";
+const FFPROBE_DURATION_ARGS: &[&str] = &["-v", "quiet", "-print_format", "json", "-show_format"];
 
 #[derive(Debug)]
 pub struct HlsOutput {
@@ -132,35 +143,12 @@ fn generate_variant_playlist(
     std::fs::create_dir_all(&variant_dir)
         .map_err(|e| format!("Failed to create directory {}: {}", label, e))?;
 
-    let playlist_path = variant_dir.join("playlist.m3u8");
-    let segment_pattern = variant_dir.join("seg_%05d.m4s");
+    let playlist_path = variant_dir.join(VARIANT_PLAYLIST_FILE);
+    let segment_pattern = variant_dir.join(SEGMENT_FILE_PATTERN);
+    let args = build_hls_ffmpeg_args(input_str, kbps, &segment_pattern, &playlist_path)?;
 
     let output = Command::new("ffmpeg")
-        .args([
-            "-i",
-            input_str,
-            "-v",
-            "error",
-            "-c:a",
-            "aac",
-            "-b:a",
-            &format!("{}k", kbps),
-            "-ac",
-            "2",
-            "-ar",
-            "48000",
-            "-f",
-            "hls",
-            "-hls_time",
-            "6",
-            "-hls_playlist_type",
-            "vod",
-            "-hls_segment_type",
-            "fmp4",
-            "-hls_segment_filename",
-            segment_pattern.to_str().ok_or("non utf-8 path")?,
-        ])
-        .arg(playlist_path.to_str().ok_or("non utf-8 path")?)
+        .args(&args)
         .output()
         .map_err(|e| format!("ffmpeg {} failed to start: {}", label, e))?;
 
@@ -182,6 +170,42 @@ fn generate_variant_playlist(
     }
 
     Ok(())
+}
+
+fn build_hls_ffmpeg_args(
+    input_str: &str,
+    kbps: u32,
+    segment_pattern: &Path,
+    playlist_path: &Path,
+) -> Result<Vec<String>, String> {
+    let segment_pattern = segment_pattern.to_str().ok_or("non utf-8 path")?;
+    let playlist_path = playlist_path.to_str().ok_or("non utf-8 path")?;
+
+    Ok(vec![
+        "-i".to_string(),
+        input_str.to_string(),
+        "-v".to_string(),
+        FFMPEG_LOG_LEVEL.to_string(),
+        "-c:a".to_string(),
+        HLS_AUDIO_CODEC.to_string(),
+        "-b:a".to_string(),
+        format!("{}k", kbps),
+        "-ac".to_string(),
+        HLS_AUDIO_CHANNELS.to_string(),
+        "-ar".to_string(),
+        HLS_AUDIO_SAMPLE_RATE.to_string(),
+        "-f".to_string(),
+        HLS_FORMAT.to_string(),
+        "-hls_time".to_string(),
+        HLS_SEGMENT_DURATION.to_string(),
+        "-hls_playlist_type".to_string(),
+        HLS_PLAYLIST_TYPE.to_string(),
+        "-hls_segment_type".to_string(),
+        HLS_SEGMENT_TYPE.to_string(),
+        "-hls_segment_filename".to_string(),
+        segment_pattern.to_string(),
+        playlist_path.to_string(),
+    ])
 }
 
 fn write_master_playlist(hls_dir: &Path, playlist_name: &str) -> Result<(), String> {
@@ -211,7 +235,7 @@ fn write_variant_stream_info(
 ) -> Result<(), String> {
     writeln!(master, "{}", build_stream_info_tag(kbps))
         .map_err(|e| format!("Error writing {}: {}", playlist_name, e))?;
-    writeln!(master, "{}/playlist.m3u8", label)
+    writeln!(master, "{}/{}", label, VARIANT_PLAYLIST_FILE)
         .map_err(|e| format!("Error writing {}: {}", playlist_name, e))?;
     Ok(())
 }
@@ -226,7 +250,7 @@ fn build_stream_info_tag(kbps: u32) -> String {
 /// Получаем длительность исходного файла через ffprobe
 fn get_duration(input_path: &Path) -> Option<f64> {
     let output = Command::new("ffprobe")
-        .args(["-v", "quiet", "-print_format", "json", "-show_format"])
+        .args(FFPROBE_DURATION_ARGS)
         .arg(input_path)
         .output()
         .ok()?;
