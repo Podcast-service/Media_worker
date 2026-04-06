@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use serde::{Deserialize, Serialize};
@@ -17,14 +17,14 @@ pub struct MediaUploadedEvent {
     pub size_bytes: usize,
     pub original_format: String,
     pub temp_path: String,
-    pub uploaded_at: String,
+    pub uploaded_at: DateTime<Utc>,
 }
 
 /// Входящее событие — запрос на удаление медиа
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaDeletedEvent {
     pub file_id: String,
-    pub deleted_at: String,
+    pub deleted_at: DateTime<Utc>,
 }
 
 /// media.worker.converted — файл успешно сконвертирован и загружен в хранилище
@@ -34,7 +34,7 @@ pub struct MediaWorkerConvertedEvent {
     pub path: String,
     pub duration: f64,
     pub bitrates: Vec<u32>,
-    pub converted_at: String,
+    pub converted_at: DateTime<Utc>,
 }
 
 /// media.worker.error — ошибка на стадии обработки
@@ -43,7 +43,7 @@ pub struct MediaWorkerErrorEvent {
     pub file_id: String,
     pub stage: String,
     pub error_message: String,
-    pub timestamp: String,
+    pub timestamp: DateTime<Utc>,
 }
 
 /// media.worker.deleted — файлы успешно удалены из хранилища
@@ -51,7 +51,7 @@ pub struct MediaWorkerErrorEvent {
 pub struct MediaWorkerDeletedEvent {
     pub file_id: String,
     pub deleted_objects: u32,
-    pub deleted_at: String,
+    pub deleted_at: DateTime<Utc>,
 }
 
 
@@ -87,7 +87,7 @@ impl KafkaProducer {
             path: hls_path.to_string(),
             duration,
             bitrates,
-            converted_at: Utc::now().to_rfc3339(),
+            converted_at: Utc::now(),
         };
 
         let payload = serde_json::to_string(&event)?;
@@ -122,7 +122,7 @@ impl KafkaProducer {
             file_id: file_id.to_string(),
             stage: stage.to_string(),
             error_message: error_message.to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: Utc::now(),
         };
 
         let payload = serde_json::to_string(&event)?;
@@ -149,7 +149,7 @@ impl KafkaProducer {
         let event = MediaWorkerDeletedEvent {
             file_id: file_id.to_string(),
             deleted_objects,
-            deleted_at: Utc::now().to_rfc3339(),
+            deleted_at: Utc::now(),
         };
 
         let payload = serde_json::to_string(&event)?;
