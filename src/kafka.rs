@@ -5,6 +5,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::info;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -101,7 +102,7 @@ impl KafkaProducer {
                 anyhow::anyhow!("Failed to send media.worker.converted: {}", err)
             })?;
 
-        tracing::info!(
+        info!(
             "Published media.worker.converted (file_id={}, path={})",
             file_id,
             hls_path,
@@ -134,7 +135,7 @@ impl KafkaProducer {
             .await
             .map_err(|(err, _msg)| anyhow::anyhow!("Failed to send media.worker.error: {}", err))?;
 
-        tracing::info!(
+        info!(
             "Published media.worker.error (file_id={}, stage={})",
             file_id,
             stage,
@@ -163,7 +164,7 @@ impl KafkaProducer {
                 anyhow::anyhow!("Failed to send media.worker.deleted: {}", err)
             })?;
 
-        tracing::info!(
+        info!(
             "Published media.worker.deleted (file_id={}, objects={})",
             file_id,
             deleted_objects,

@@ -42,7 +42,7 @@ pub trait StorageBackend: Send + Sync {
             self.upload_file(local_path, bucket, &object_key).await?;
         }
 
-        tracing::info!(
+        info!(
             "[{}] HLS upload complete: {}/{}",
             self.name(),
             bucket,

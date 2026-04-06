@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tokio::fs;
 use uuid::Uuid;
+use tracing::warn;
 
 const BITRATES: &[(u32, &str)] = &[(64, "64k"), (128, "128k"), (256, "256k")];
 
@@ -53,6 +54,8 @@ async fn collect_files_recursive(
                 .to_string_lossy()
                 .to_string();
             out.push((path, rel));
+        } else {
+            warn!("Unexpected entry type: {}", path.display());
         }
     }
     Ok(())

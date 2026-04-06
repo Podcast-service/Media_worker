@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use tracing::info;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::hls;
@@ -53,7 +53,7 @@ pub async fn run_pipeline(
                     .send_converted(file_id, &result.hls_path, result.duration, result.bitrates)
                     .await
                 {
-                    tracing::warn!("Failed to publish media.worker.converted: {}", e);
+                    warn!("Failed to publish media.worker.converted: {}", e);
                 }
 
                 progress.insert(
@@ -71,7 +71,7 @@ pub async fn run_pipeline(
             }
             Err(e) => {
                 last_error = e.clone();
-                tracing::warn!(
+                warn!(
                     "Pipeline attempt {}/{} failed for file_id={}: {}",
                     attempt,
                     MAX_RETRIES,
@@ -86,7 +86,7 @@ pub async fn run_pipeline(
         }
     }
 
-    tracing::error!(
+    error!(
         "Pipeline failed after {} retries for file_id={}: {}",
         MAX_RETRIES,
         file_id,
@@ -97,7 +97,7 @@ pub async fn run_pipeline(
         .send_worker_error(file_id, "conversion", &last_error)
         .await
     {
-        tracing::warn!("Failed to publish media.worker.error: {}", e);
+        warn!("Failed to publish media.worker.error: {}", e);
     }
 
     progress.insert(
@@ -350,6 +350,6 @@ fn set_progress(
 
 async fn cleanup_temp(path: &str) {
     if let Err(e) = tokio::fs::remove_file(path).await {
-        tracing::debug!("Failed to cleanup temp file {}: {}", path, e);
+        debug!("Failed to cleanup temp file {}: {}", path, e);
     }
 }

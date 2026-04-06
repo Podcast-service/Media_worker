@@ -10,7 +10,7 @@ mod storage;
 use axum::{routing::get, Router};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{error, info};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -50,7 +50,7 @@ async fn main() {
         )
         .await
         {
-            tracing::error!("Kafka consumer crashed: {}", e);
+            error!("Kafka consumer crashed: {}", e);
         }
     });
 

@@ -5,7 +5,7 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::{primitives::ByteStream, Client};
 use std::{env, path::Path};
 use tokio::fs;
-use tracing::info;
+use tracing::{error, info};
 
 pub struct Config {
     pub region: String,
@@ -41,7 +41,7 @@ impl RustFsClient {
                 info!("Bucket '{}' already exists, skip create", bucket);
             }
             Err(err) => {
-                tracing::error!(
+                error!(
                     "create_bucket error: code={:?}, message={:?}, raw={:?}",
                     err.code(),
                     err.message(),
