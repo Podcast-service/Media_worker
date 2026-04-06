@@ -98,7 +98,6 @@ pub async fn progress_sse(
             }
         }
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
         progress_map.remove(&file_id);
     });
 
