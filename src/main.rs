@@ -32,9 +32,11 @@ async fn main() {
         kafka::new_producer(&kafka_brokers).expect("Failed to create Kafka producer");
 
     let progress_map = progress::new_progress_map();
+    let progress_config = progress::ProgressConfig::from_env();
 
     let state = progress::WorkerState {
         progress: progress_map.clone(),
+        config: progress_config,
     };
 
     let consumer_storage = storage.clone();

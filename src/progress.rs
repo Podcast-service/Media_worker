@@ -8,8 +8,14 @@ use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::warn;
 use utoipa::ToSchema;
 use uuid::Uuid;
+
+const PROGRESS_POLL_INTERVAL_MS_ENV: &str = "PROGRESS_POLL_INTERVAL_MS";
+const PROGRESS_WAIT_TIMEOUT_MS_ENV: &str = "PROGRESS_WAIT_TIMEOUT_MS";
+const DEFAULT_PROGRESS_POLL_INTERVAL_MS: u64 = 300;
+const DEFAULT_PROGRESS_WAIT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -37,8 +43,30 @@ pub fn new_progress_map() -> ProgressMap {
 }
 
 #[derive(Clone)]
+pub struct ProgressConfig {
+    pub poll_interval: Duration,
+    pub wait_timeout: Duration,
+}
+
+impl ProgressConfig {
+    pub fn from_env() -> Self {
+        Self {
+            poll_interval: load_duration_from_env(
+                PROGRESS_POLL_INTERVAL_MS_ENV,
+                DEFAULT_PROGRESS_POLL_INTERVAL_MS,
+            ),
+            wait_timeout: load_duration_from_env(
+                PROGRESS_WAIT_TIMEOUT_MS_ENV,
+                DEFAULT_PROGRESS_WAIT_TIMEOUT_MS,
+            ),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct WorkerState {
     pub progress: ProgressMap,
+    pub config: ProgressConfig,
 }
 
 type SseStream = Pin<Box<dyn futures_core::Stream<Item = Result<Event, Infallible>> + Send>>;
@@ -59,20 +87,20 @@ pub async fn progress_sse(
     Path(file_id): Path<Uuid>,
 ) -> Sse<SseStream> {
     let progress_map = state.progress.clone();
+    let config = state.config.clone();
 
     let stream: SseStream = Box::pin(async_stream::stream! {
-        let mut interval = tokio::time::interval(Duration::from_millis(300));
+        let mut interval = tokio::time::interval(config.poll_interval);
+        let wait_deadline = tokio::time::Instant::now() + config.wait_timeout;
 
-        let mut waited = 0;
         while !progress_map.contains_key(&file_id) {
-            if waited >= 100 {
+            if tokio::time::Instant::now() >= wait_deadline {
                 yield Ok(Event::default()
                     .event("error")
                     .data(r#"{"error":"file_id not found in worker"}"#));
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            waited += 1;
+            tokio::time::sleep(config.poll_interval).await;
         }
 
         loop {
@@ -106,4 +134,27 @@ pub async fn progress_sse(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+fn load_duration_from_env(env_name: &str, default_ms: u64) -> Duration {
+    match std::env::var(env_name) {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(0) => {
+                warn!(
+                    "{} must be greater than 0, using default {}ms",
+                    env_name, default_ms
+                );
+                Duration::from_millis(default_ms)
+            }
+            Ok(milliseconds) => Duration::from_millis(milliseconds),
+            Err(e) => {
+                warn!(
+                    "Failed to parse {}='{}': {}, using default {}ms",
+                    env_name, value, e, default_ms
+                );
+                Duration::from_millis(default_ms)
+            }
+        },
+        Err(_) => Duration::from_millis(default_ms),
+    }
 }
