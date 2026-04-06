@@ -136,6 +136,7 @@ curl -N "http://localhost:8082/api/media/worker/progress/$FILE_ID"
 ```env
 KAFKA_BROKERS=kafka-1:9092,kafka-2:9092
 PORT=8082
+PIPELINE_MAX_RETRIES=3
 RUSTFS_ENDPOINT_URL=https://rustfs.example.internal
 RUSTFS_ACCESS_KEY_ID=***
 RUSTFS_SECRET_ACCESS_KEY=***
@@ -143,6 +144,8 @@ RUSTFS_REGION=us-east-1
 ```
 
 Это именно переменные воркера как S3-клиента. Если вы поднимаете сам сервер RustFS отдельно, у него будут другие параметры, например `RUSTFS_ACCESS_KEY` и `RUSTFS_SECRET_KEY`.
+
+`PIPELINE_MAX_RETRIES` задает количество попыток обработки одного файла. По умолчанию используется `3`. Если переменная не задана, не парсится в число или равна `0`, воркер пишет предупреждение в лог и возвращается к значению `3`.
 
 ### Сборка образа
 
@@ -160,6 +163,7 @@ docker run -d \
   -p 8082:8082 \
   -e KAFKA_BROKERS="kafka-1:9092,kafka-2:9092" \
   -e PORT="8082" \
+  -e PIPELINE_MAX_RETRIES="3" \
   -e RUSTFS_ENDPOINT_URL="https://rustfs.example.internal" \
   -e RUSTFS_ACCESS_KEY_ID="access-key" \
   -e RUSTFS_SECRET_ACCESS_KEY="secret-key" \

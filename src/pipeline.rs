@@ -12,7 +12,8 @@ use crate::progress::{ProgressMap, WorkerProgress, WorkerStage};
 use crate::storage::StorageBackend;
 
 const HLS_BUCKET: &str = "audio-hls";
-const MAX_RETRIES: u32 = 3;
+const MAX_RETRIES_ENV: &str = "PIPELINE_MAX_RETRIES";
+const DEFAULT_MAX_RETRIES: u32 = 3;
 const LOUDNORM_TARGET_I: &str = "-16";
 const LOUDNORM_TARGET_TP: &str = "-1.5";
 const LOUDNORM_TARGET_LRA: &str = "11";
@@ -37,6 +38,8 @@ pub async fn run_pipeline(
     kafka: SharedKafkaProducer,
     progress: ProgressMap,
 ) {
+    let max_retries = load_max_retries();
+
     progress.insert(
         file_id,
         WorkerProgress {
@@ -48,10 +51,10 @@ pub async fn run_pipeline(
 
     let mut last_error = String::new();
 
-    for attempt in 1..=MAX_RETRIES {
+    for attempt in 1..=max_retries {
         info!(
             "Pipeline attempt {}/{} for file_id={}",
-            attempt, MAX_RETRIES, file_id
+            attempt, max_retries, file_id
         );
 
         match execute_pipeline(file_id, temp_path, &storage, &progress).await {
@@ -81,12 +84,12 @@ pub async fn run_pipeline(
                 warn!(
                     "Pipeline attempt {}/{} failed for file_id={}: {}",
                     attempt,
-                    MAX_RETRIES,
+                    max_retries,
                     file_id,
                     e
                 );
 
-                if attempt < MAX_RETRIES {
+                if attempt < max_retries {
                     tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
                 }
             }
@@ -95,7 +98,7 @@ pub async fn run_pipeline(
 
     error!(
         "Pipeline failed after {} retries for file_id={}: {}",
-        MAX_RETRIES,
+        max_retries,
         file_id,
         last_error
     );
@@ -117,6 +120,29 @@ pub async fn run_pipeline(
     );
 
     cleanup_temp(temp_path).await;
+}
+
+fn load_max_retries() -> u32 {
+    match std::env::var(MAX_RETRIES_ENV) {
+        Ok(value) => match value.parse::<u32>() {
+            Ok(0) => {
+                warn!(
+                    "{} must be greater than 0, using default {}",
+                    MAX_RETRIES_ENV, DEFAULT_MAX_RETRIES
+                );
+                DEFAULT_MAX_RETRIES
+            }
+            Ok(retries) => retries,
+            Err(e) => {
+                warn!(
+                    "Failed to parse {}='{}': {}, using default {}",
+                    MAX_RETRIES_ENV, value, e, DEFAULT_MAX_RETRIES
+                );
+                DEFAULT_MAX_RETRIES
+            }
+        },
+        Err(_) => DEFAULT_MAX_RETRIES,
+    }
 }
 
 /// Внутренняя реализация pipeline (один прогон)
