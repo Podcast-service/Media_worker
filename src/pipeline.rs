@@ -37,7 +37,7 @@ pub async fn run_pipeline(
     storage: Arc<dyn StorageBackend>,
     kafka: SharedKafkaProducer,
     progress: ProgressMap,
-) {
+) -> Result<(), String> {
     let max_retries = load_max_retries();
 
     progress.insert(
@@ -77,7 +77,7 @@ pub async fn run_pipeline(
 
                 cleanup_temp(temp_path).await;
 
-                return;
+                return Ok(());
             }
             Err(e) => {
                 last_error = e.clone();
@@ -115,11 +115,13 @@ pub async fn run_pipeline(
         WorkerProgress {
             stage: WorkerStage::Error,
             percent: 0,
-            message: Some(last_error),
+            message: Some(last_error.clone()),
         },
     );
 
     cleanup_temp(temp_path).await;
+
+    Err(last_error)
 }
 
 fn load_max_retries() -> u32 {

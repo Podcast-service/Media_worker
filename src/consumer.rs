@@ -103,7 +103,10 @@ async fn handle_uploaded(
     let temp_path = event.temp_path.clone();
 
     tokio::spawn(async move {
-        pipeline::run_pipeline(file_id, &temp_path, storage, kafka, progress).await;
+        if let Err(e) = pipeline::run_pipeline(file_id, &temp_path, storage, kafka, progress).await
+        {
+            error!("Pipeline task failed for file_id={}: {}", file_id, e);
+        }
     });
 }
 
