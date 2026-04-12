@@ -7,7 +7,7 @@ use tokio_stream::StreamExt;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::kafka::{MediaDeletedEvent, MediaUploadedEvent, SharedKafkaProducer};
+use crate::kafka::{MediaEvent, SharedKafkaProducer};
 use crate::pipeline;
 use crate::progress::ProgressMap;
 use crate::storage::StorageBackend;
@@ -56,16 +56,44 @@ pub async fn run_media_consumer(
                     }
                 };
 
-                if let Ok(event) = serde_json::from_str::<MediaUploadedEvent>(payload) {
-                    if !event.temp_path.is_empty() {
-                        handle_uploaded(event, &storage, &kafka, &progress).await;
-                        continue;
-                    }
-                }
+                match serde_json::from_str::<MediaEvent>(payload) {
+                    Ok(MediaEvent::Uploaded {
+                        file_id,
+                        author_id,
+                        size_bytes,
+                        original_format,
+                        temp_path,
+                        uploaded_at: _,
+                    }) => {
+                        if temp_path.is_empty() {
+                            warn!(
+                                "Received media.uploaded with empty temp_path for file_id={}",
+                                file_id
+                            );
+                            continue;
+                        }
 
-                if let Ok(event) = serde_json::from_str::<MediaDeletedEvent>(payload) {
-                    handle_deleted(event, &storage, &kafka).await;
-                    continue;
+                        handle_uploaded(
+                            file_id,
+                            author_id,
+                            size_bytes,
+                            original_format,
+                            temp_path,
+                            &storage,
+                            &kafka,
+                            &progress,
+                        )
+                        .await;
+                    }
+                    Ok(MediaEvent::Deleted {
+                        file_id,
+                        deleted_at: _,
+                    }) => {
+                        handle_deleted(file_id, &storage, &kafka).await;
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse media event payload: {}", e);
+                    }
                 }
             }
             Err(e) => {
@@ -79,12 +107,16 @@ pub async fn run_media_consumer(
 }
 
 async fn handle_uploaded(
-    event: MediaUploadedEvent,
+    file_id_raw: String,
+    author_id: String,
+    size_bytes: usize,
+    original_format: String,
+    temp_path: String,
     storage: &Arc<dyn StorageBackend>,
     kafka: &SharedKafkaProducer,
     progress: &ProgressMap,
 ) {
-    let file_id = match Uuid::parse_str(&event.file_id) {
+    let file_id = match Uuid::parse_str(&file_id_raw) {
         Ok(id) => id,
         Err(e) => {
             warn!("Invalid file_id in media.uploaded event: {}", e);
@@ -93,14 +125,13 @@ async fn handle_uploaded(
     };
 
     info!(
-        "Received media.uploaded: file_id={}, size={}, format={}, path={}",
-        event.file_id, event.size_bytes, event.original_format, event.temp_path
+        "Received media.uploaded: file_id={}, author_id={}, size={}, format={}, path={}",
+        file_id_raw, author_id, size_bytes, original_format, temp_path
     );
 
     let storage = storage.clone();
     let kafka = kafka.clone();
     let progress = progress.clone();
-    let temp_path = event.temp_path.clone();
 
     tokio::spawn(async move {
         if let Err(e) = pipeline::run_pipeline(file_id, &temp_path, storage, kafka, progress).await
@@ -111,11 +142,11 @@ async fn handle_uploaded(
 }
 
 async fn handle_deleted(
-    event: MediaDeletedEvent,
+    file_id_raw: String,
     storage: &Arc<dyn StorageBackend>,
     kafka: &SharedKafkaProducer,
 ) {
-    let file_id = match Uuid::parse_str(&event.file_id) {
+    let file_id = match Uuid::parse_str(&file_id_raw) {
         Ok(id) => id,
         Err(e) => {
             warn!("Invalid file_id in media.deleted event: {}", e);

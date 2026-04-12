@@ -9,56 +9,49 @@ use tracing::info;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// Входящее событие из media_api — файл загружен
+/// Входящие события из media_api.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MediaUploadedEvent {
-    pub file_id: String,
-    pub author_id: String,
-    pub size_bytes: usize,
-    pub original_format: String,
-    pub temp_path: String,
-    pub uploaded_at: DateTime<Utc>,
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum MediaEvent {
+    Uploaded {
+        file_id: String,
+        author_id: String,
+        size_bytes: usize,
+        original_format: String,
+        temp_path: String,
+        uploaded_at: DateTime<Utc>,
+    },
+    Deleted {
+        file_id: String,
+        deleted_at: DateTime<Utc>,
+    },
 }
 
-/// Входящее событие — запрос на удаление медиа
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MediaDeletedEvent {
-    pub file_id: String,
-    pub deleted_at: DateTime<Utc>,
-}
-
-/// media.worker.converted — файл успешно сконвертирован и загружен в хранилище
+/// Исходящие события media.worker.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct MediaWorkerConvertedEvent {
-    pub file_id: String,
-    pub path: String,
-    pub duration: f64,
-    pub bitrates: Vec<u32>,
-    pub converted_at: DateTime<Utc>,
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum MediaWorkerEvent {
+    Converted {
+        file_id: String,
+        path: String,
+        duration: f64,
+        bitrates: Vec<u32>,
+        converted_at: DateTime<Utc>,
+    },
+    Error {
+        file_id: String,
+        stage: String,
+        error_message: String,
+        timestamp: DateTime<Utc>,
+    },
+    Deleted {
+        file_id: String,
+        deleted_objects: u32,
+        deleted_at: DateTime<Utc>,
+    },
 }
 
-/// media.worker.error — ошибка на стадии обработки
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct MediaWorkerErrorEvent {
-    pub file_id: String,
-    pub stage: String,
-    pub error_message: String,
-    pub timestamp: DateTime<Utc>,
-}
-
-/// media.worker.deleted — файлы успешно удалены из хранилища
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct MediaWorkerDeletedEvent {
-    pub file_id: String,
-    pub deleted_objects: u32,
-    pub deleted_at: DateTime<Utc>,
-}
-
-
-const TOPIC_MEDIA: &str = "media";
 const TOPIC_MEDIA_WORKER: &str = "media.worker";
-
-
 pub struct KafkaProducer {
     producer: FutureProducer,
 }
@@ -82,8 +75,9 @@ impl KafkaProducer {
         duration: f64,
         bitrates: Vec<u32>,
     ) -> Result<()> {
-        let event = MediaWorkerConvertedEvent {
-            file_id: file_id.to_string(),
+        let file_id_key = file_id.to_string();
+        let event = MediaWorkerEvent::Converted {
+            file_id: file_id_key.clone(),
             path: hls_path.to_string(),
             duration,
             bitrates,
@@ -92,7 +86,7 @@ impl KafkaProducer {
 
         let payload = serde_json::to_string(&event)?;
         let record = FutureRecord::to(TOPIC_MEDIA_WORKER)
-            .key(&event.file_id)
+            .key(&file_id_key)
             .payload(&payload);
 
         self.producer
@@ -104,8 +98,7 @@ impl KafkaProducer {
 
         info!(
             "Published media.worker.converted (file_id={}, path={})",
-            file_id,
-            hls_path,
+            file_id, hls_path,
         );
 
         Ok(())
@@ -118,8 +111,9 @@ impl KafkaProducer {
         stage: &str,
         error_message: &str,
     ) -> Result<()> {
-        let event = MediaWorkerErrorEvent {
-            file_id: file_id.to_string(),
+        let file_id_key = file_id.to_string();
+        let event = MediaWorkerEvent::Error {
+            file_id: file_id_key.clone(),
             stage: stage.to_string(),
             error_message: error_message.to_string(),
             timestamp: Utc::now(),
@@ -127,7 +121,7 @@ impl KafkaProducer {
 
         let payload = serde_json::to_string(&event)?;
         let record = FutureRecord::to(TOPIC_MEDIA_WORKER)
-            .key(&event.file_id)
+            .key(&file_id_key)
             .payload(&payload);
 
         self.producer
@@ -137,8 +131,7 @@ impl KafkaProducer {
 
         info!(
             "Published media.worker.error (file_id={}, stage={})",
-            file_id,
-            stage,
+            file_id, stage,
         );
 
         Ok(())
@@ -146,15 +139,16 @@ impl KafkaProducer {
 
     /// Публикует media.worker.deleted
     pub async fn send_deleted(&self, file_id: Uuid, deleted_objects: u32) -> Result<()> {
-        let event = MediaWorkerDeletedEvent {
-            file_id: file_id.to_string(),
+        let file_id_key = file_id.to_string();
+        let event = MediaWorkerEvent::Deleted {
+            file_id: file_id_key.clone(),
             deleted_objects,
             deleted_at: Utc::now(),
         };
 
         let payload = serde_json::to_string(&event)?;
         let record = FutureRecord::to(TOPIC_MEDIA_WORKER)
-            .key(&event.file_id)
+            .key(&file_id_key)
             .payload(&payload);
 
         self.producer
@@ -166,8 +160,7 @@ impl KafkaProducer {
 
         info!(
             "Published media.worker.deleted (file_id={}, objects={})",
-            file_id,
-            deleted_objects,
+            file_id, deleted_objects,
         );
 
         Ok(())

@@ -2,6 +2,8 @@
 
 `media_worker` слушает Kafka-топик `media`, обрабатывает входящие медиафайлы через `ffmpeg`, загружает HLS-артефакты в S3-совместимое хранилище и публикует результат в Kafka-топик `media.worker`.
 
+Отдельный контракт Kafka-событий зафиксирован в [docs/kafka-contract.md](./docs/kafka-contract.md).
+
 Сервис делает три вещи:
 
 1. Обрабатывает событие загрузки файла и конвертирует его в HLS.
@@ -91,7 +93,7 @@ cp /absolute/path/to/test.mp3 ./tmp/media/test.mp3
 
 1. Подготовьте файл `./tmp/media/test.mp3`.
 2. Выберите `file_id`, например `11111111-1111-1111-1111-111111111111`.
-3. Отправьте событие `media.uploaded` в Kafka.
+3. Отправьте событие `media.uploaded` в Kafka с полем `event`.
 4. Смотрите SSE-прогресс и ответы в топике `media.worker`.
 
 Готовый пример:
@@ -100,7 +102,7 @@ cp /absolute/path/to/test.mp3 ./tmp/media/test.mp3
 FILE_ID=11111111-1111-1111-1111-111111111111
 
 printf '%s\n' \
-"{\"file_id\":\"$FILE_ID\",\"author_id\":\"demo\",\"size_bytes\":123456,\"original_format\":\"mp3\",\"temp_path\":\"/media_tmp/test.mp3\",\"uploaded_at\":\"2026-04-06T12:00:00Z\"}" \
+"{\"event\":\"uploaded\",\"file_id\":\"$FILE_ID\",\"author_id\":\"demo\",\"size_bytes\":123456,\"original_format\":\"mp3\",\"temp_path\":\"/media_tmp/test.mp3\",\"uploaded_at\":\"2026-04-06T12:00:00Z\"}" \
 | docker compose exec -T kafka /opt/bitnami/kafka/bin/kafka-console-producer.sh \
     --bootstrap-server kafka:9092 \
     --topic media
@@ -116,7 +118,7 @@ curl -N "http://localhost:8082/api/media/worker/progress/$FILE_ID"
 - отправит событие в топик `media.worker`.
 
 
-
+# ПОКА НЕ ПРОВЕРЯЛ ИМЕННО ЭТО РЕШЕНИЕ!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ## Сценарий 2. Продовый запуск с внешними Kafka и S3
 
 Этот сценарий нужен для реального окружения, где Kafka и S3 уже существуют и управляются отдельно от воркера.
@@ -180,7 +182,7 @@ docker run -d \
   media-worker:latest
 ```
 
-Если producer, который публикует `media.uploaded`, работает отдельно, он должен передавать в `temp_path` путь, который существует внутри контейнера воркера. Для примера выше это путь вида `/media_tmp/<file_name>`.
+Если producer, который публикует `media.uploaded`, работает отдельно, он должен передавать в payload поле `event: "uploaded"` и путь `temp_path`, который существует внутри контейнера воркера. Для примера выше это путь вида `/media_tmp/<file_name>`.
 
 ### Что важно в проде
 

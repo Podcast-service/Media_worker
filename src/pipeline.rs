@@ -83,10 +83,7 @@ pub async fn run_pipeline(
                 last_error = e.clone();
                 warn!(
                     "Pipeline attempt {}/{} failed for file_id={}: {}",
-                    attempt,
-                    max_retries,
-                    file_id,
-                    e
+                    attempt, max_retries, file_id, e
                 );
 
                 if attempt < max_retries {
@@ -98,9 +95,7 @@ pub async fn run_pipeline(
 
     error!(
         "Pipeline failed after {} retries for file_id={}: {}",
-        max_retries,
-        file_id,
-        last_error
+        max_retries, file_id, last_error
     );
 
     if let Err(e) = kafka

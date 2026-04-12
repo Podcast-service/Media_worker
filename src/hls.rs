@@ -2,8 +2,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tokio::fs;
-use uuid::Uuid;
 use tracing::warn;
+use uuid::Uuid;
 
 const BITRATES: &[(u32, &str)] = &[(64, "64k"), (128, "128k"), (256, "256k")];
 const VARIANT_PLAYLIST_FILE: &str = "playlist.m3u8";
@@ -48,7 +48,7 @@ async fn collect_files_recursive(
 ) -> Result<(), String> {
     let mut entries = fs::read_dir(dir)
         .await
-         .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
+        .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
 
     while let Some(entry) = entries
         .next_entry()

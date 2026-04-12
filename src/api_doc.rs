@@ -1,6 +1,6 @@
 use utoipa::OpenApi;
 
-use crate::kafka::{MediaWorkerConvertedEvent, MediaWorkerDeletedEvent, MediaWorkerErrorEvent};
+use crate::kafka::MediaWorkerEvent;
 use crate::progress::{WorkerProgress, WorkerStage};
 
 #[derive(OpenApi)]
@@ -12,9 +12,7 @@ use crate::progress::{WorkerProgress, WorkerStage};
         schemas(
             WorkerProgress,
             WorkerStage,
-            MediaWorkerConvertedEvent,
-            MediaWorkerErrorEvent,
-            MediaWorkerDeletedEvent,
+            MediaWorkerEvent,
         )
     ),
     tags(
