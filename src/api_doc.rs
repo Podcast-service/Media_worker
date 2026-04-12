@@ -1,7 +1,9 @@
 use utoipa::OpenApi;
 
-use crate::kafka::MediaWorkerEvent;
-use crate::progress::{WorkerProgress, WorkerStage};
+use crate::{
+    kafka::MediaWorkerEvent,
+    progress::{WorkerProgress, WorkerStage},
+};
 
 #[derive(OpenApi)]
 #[openapi(

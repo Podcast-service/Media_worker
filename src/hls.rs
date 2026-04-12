@@ -1,6 +1,9 @@
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
 use tokio::fs;
 use tracing::warn;
 use uuid::Uuid;

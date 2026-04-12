@@ -1,15 +1,19 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
 use serde::Deserialize;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::hls;
-use crate::kafka::SharedKafkaProducer;
-use crate::progress::{ProgressMap, WorkerProgress, WorkerStage};
-use crate::storage::StorageBackend;
+use crate::{
+    hls,
+    kafka::SharedKafkaProducer,
+    progress::{ProgressMap, WorkerProgress, WorkerStage},
+    storage::StorageBackend,
+};
 
 const HLS_BUCKET: &str = "audio-hls";
 const MAX_RETRIES_ENV: &str = "PIPELINE_MAX_RETRIES";

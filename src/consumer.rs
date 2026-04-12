@@ -1,16 +1,21 @@
-use anyhow::{Context, Result};
-use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::message::Message;
 use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use rdkafka::{
+    config::ClientConfig,
+    consumer::{Consumer, StreamConsumer},
+    message::Message,
+};
 use tokio_stream::StreamExt;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::kafka::{MediaEvent, SharedKafkaProducer};
-use crate::pipeline;
-use crate::progress::ProgressMap;
-use crate::storage::StorageBackend;
+use crate::{
+    kafka::{MediaEvent, SharedKafkaProducer},
+    pipeline,
+    progress::ProgressMap,
+    storage::StorageBackend,
+};
 
 const TOPIC: &str = "media";
 const GROUP_ID: &str = "media-worker-service";

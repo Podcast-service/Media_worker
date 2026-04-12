@@ -7,14 +7,14 @@ mod pipeline;
 mod progress;
 mod storage;
 
-use axum::{routing::get, Router};
 use std::sync::Arc;
+
+use api_doc::ApiDoc;
+use axum::{routing::get, Router};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
-
-use api_doc::ApiDoc;
 
 #[tokio::main]
 async fn main() {

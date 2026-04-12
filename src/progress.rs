@@ -1,13 +1,11 @@
+use std::{convert::Infallible, pin::Pin, sync::Arc, time::Duration};
+
 use axum::{
     extract::{Path, State},
     response::sse::{Event, KeepAlive, Sse},
 };
 use dashmap::DashMap;
 use serde::Serialize;
-use std::convert::Infallible;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
 use tracing::warn;
 use utoipa::ToSchema;
 use uuid::Uuid;

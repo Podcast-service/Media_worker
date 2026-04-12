@@ -1,9 +1,9 @@
+use std::{env, path::Path};
+
 use anyhow::{Context, Result};
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
-use aws_sdk_s3::error::ProvideErrorMetadata;
-use aws_sdk_s3::{primitives::ByteStream, Client};
-use std::{env, path::Path};
+use aws_sdk_s3::{error::ProvideErrorMetadata, primitives::ByteStream, Client};
 use tokio::fs;
 use tracing::{error, info};
 
@@ -159,8 +159,9 @@ pub async fn create_client(cfg: &Config) -> Result<RustFsClient> {
     Ok(RustFsClient::new(Client::from_conf(s3_config)))
 }
 
-use crate::storage::StorageBackend;
 use async_trait::async_trait;
+
+use crate::storage::StorageBackend;
 
 #[async_trait]
 impl StorageBackend for RustFsClient {

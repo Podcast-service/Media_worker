@@ -1,10 +1,12 @@
+use std::{sync::Arc, time::Duration};
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use rdkafka::{
+    config::ClientConfig,
+    producer::{FutureProducer, FutureRecord, Producer},
+};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::time::Duration;
 use tracing::info;
 use utoipa::ToSchema;
 use uuid::Uuid;
