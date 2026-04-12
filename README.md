@@ -141,6 +141,7 @@ PORT=8082
 PIPELINE_MAX_RETRIES=3
 PROGRESS_POLL_INTERVAL_MS=300
 PROGRESS_WAIT_TIMEOUT_MS=30000
+RUSTFS_UPLOAD_BUFFER_SIZE_BYTES=65536
 RUSTFS_ENDPOINT_URL=https://rustfs.example.internal
 RUSTFS_ACCESS_KEY_ID=***
 RUSTFS_SECRET_ACCESS_KEY=***
@@ -154,6 +155,8 @@ RUSTFS_REGION=us-east-1
 `PROGRESS_POLL_INTERVAL_MS` задает интервал опроса `progress_map` в SSE-обработчике. По умолчанию используется `300` мс.
 
 `PROGRESS_WAIT_TIMEOUT_MS` задает максимальное время ожидания появления `file_id` в `progress_map` перед возвратом SSE-ошибки. По умолчанию используется `30000` мс.
+
+`RUSTFS_UPLOAD_BUFFER_SIZE_BYTES` задает размер буфера чтения файла при потоковой загрузке в RustFS. По умолчанию используется `65536` байт. Если значение меньше `4096` байт, воркер пишет предупреждение в лог и использует минимум `4096`.
 
 ### Сборка образа
 
@@ -174,6 +177,7 @@ docker run -d \
   -e PIPELINE_MAX_RETRIES="3" \
   -e PROGRESS_POLL_INTERVAL_MS="300" \
   -e PROGRESS_WAIT_TIMEOUT_MS="30000" \
+  -e RUSTFS_UPLOAD_BUFFER_SIZE_BYTES="65536" \
   -e RUSTFS_ENDPOINT_URL="https://rustfs.example.internal" \
   -e RUSTFS_ACCESS_KEY_ID="access-key" \
   -e RUSTFS_SECRET_ACCESS_KEY="secret-key" \

@@ -5,7 +5,11 @@ use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
 use aws_sdk_s3::{error::ProvideErrorMetadata, primitives::ByteStream, Client};
 use tokio::fs;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+const RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV: &str = "RUSTFS_UPLOAD_BUFFER_SIZE_BYTES";
+const DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES: usize = 64 * 1024;
+const MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES: usize = 4 * 1024;
 
 pub struct Config {
     pub region: String,
@@ -59,20 +63,28 @@ impl RustFsClient {
         object_key: &str,
         bucket_name: &str,
     ) -> Result<()> {
-        if !filepath.exists() {
+        let metadata = fs::metadata(filepath)
+            .await
+            .with_context(|| format!("can not stat file {}", filepath.display()))?;
+
+        if !metadata.is_file() {
             anyhow::bail!("file does not exist: {}", filepath.display());
         }
 
-        let data = fs::read(filepath)
+        let size_bytes = metadata.len();
+        let buffer_size = load_upload_buffer_size_bytes();
+        let body = ByteStream::read_from()
+            .path(filepath)
+            .buffer_size(buffer_size)
+            .build()
             .await
             .with_context(|| format!("can not open file {}", filepath.display()))?;
-        let size_bytes = data.len();
 
         self.client
             .put_object()
             .bucket(bucket_name)
             .key(object_key)
-            .body(ByteStream::from(data))
+            .body(body)
             .send()
             .await
             .with_context(|| format!("error uploading '{object_key}' to bucket '{bucket_name}'"))?;
@@ -157,6 +169,32 @@ pub async fn create_client(cfg: &Config) -> Result<RustFsClient> {
         .build();
 
     Ok(RustFsClient::new(Client::from_conf(s3_config)))
+}
+
+fn load_upload_buffer_size_bytes() -> usize {
+    match env::var(RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV) {
+        Ok(value) => match value.parse::<usize>() {
+            Ok(size) if size < MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES => {
+                warn!(
+                    "{}={} is too small, using minimum {}",
+                    RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV, size, MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+                );
+                MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+            }
+            Ok(size) => size,
+            Err(e) => {
+                warn!(
+                    "Failed to parse {}='{}': {}, using default {}",
+                    RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV,
+                    value,
+                    e,
+                    DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+                );
+                DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+            }
+        },
+        Err(_) => DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES,
+    }
 }
 
 use async_trait::async_trait;
