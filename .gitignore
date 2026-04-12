@@ -1,0 +1,9 @@
+target/
+tmp/media/*
+!tmp/media/.gitkeep
+
+# Rust/Cargo temporary files
+**/*.rs.bk
+
+# macOS
+.DS_Store
