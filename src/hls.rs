@@ -33,7 +33,7 @@ impl HlsOutput {
     /// Рекурсивно собирает все файлы с относительными путями от `output_dir`
     pub async fn list_files_relative(&self) -> Result<Vec<(PathBuf, String)>, String> {
         let mut result = Vec::new();
-        collect_files_recursive(&self.output_dir, &self.output_dir, &mut result).await?;
+        collect_files_iterative(&self.output_dir, &mut result).await?;
         result.sort_by(|a, b| a.1.cmp(&b.1));
         Ok(result)
     }
@@ -43,35 +43,39 @@ impl HlsOutput {
     }
 }
 
-/// Рекурсивный обход: собирает `(абсолютный_путь, относительный_ключ)`
-async fn collect_files_recursive(
+/// Итеративный обход: собирает `(абсолютный_путь, относительный_ключ)`
+async fn collect_files_iterative(
     base: &Path,
-    dir: &Path,
     out: &mut Vec<(PathBuf, String)>,
 ) -> Result<(), String> {
-    let mut entries = fs::read_dir(dir)
-        .await
-        .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
+    let mut dirs = vec![base.to_path_buf()];
 
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| format!("Read error: {}", e))?
-    {
-        let path = entry.path();
-        if path.is_dir() {
-            Box::pin(collect_files_recursive(base, &path, out)).await?;
-        } else if path.is_file() {
-            let rel = path
-                .strip_prefix(base)
-                .map_err(|e| format!("strip_prefix: {}", e))?
-                .to_string_lossy()
-                .to_string();
-            out.push((path, rel));
-        } else {
-            warn!("Unexpected entry type: {}", path.display());
+    while let Some(dir) = dirs.pop() {
+        let mut entries = fs::read_dir(&dir)
+            .await
+            .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
+
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("Read error: {}", e))?
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.is_file() {
+                let rel = path
+                    .strip_prefix(base)
+                    .map_err(|e| format!("strip_prefix: {}", e))?
+                    .to_string_lossy()
+                    .to_string();
+                out.push((path, rel));
+            } else {
+                warn!("Unexpected entry type: {}", path.display());
+            }
         }
     }
+
     Ok(())
 }
 
