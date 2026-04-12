@@ -1,11 +1,7 @@
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use tokio::fs;
+use tokio::{fs, io::AsyncWriteExt, process::Command};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -59,9 +55,14 @@ async fn collect_files_iterative(base: &Path, out: &mut Vec<(PathBuf, String)>) 
             .context("Failed to read directory entry")?
         {
             let path = entry.path();
-            if path.is_dir() {
+            let file_type = entry
+                .file_type()
+                .await
+                .with_context(|| format!("Failed to read file type for {}", path.display()))?;
+
+            if file_type.is_dir() {
                 dirs.push(path);
-            } else if path.is_file() {
+            } else if file_type.is_file() {
                 let rel = path
                     .strip_prefix(base)
                     .context("Failed to build relative path")?
@@ -89,62 +90,70 @@ async fn collect_files_iterative(base: &Path, out: &mut Vec<(PathBuf, String)>) 
 ///     playlist.m3u8
 ///     seg_00000.m4s ...
 /// ```
-pub fn convert_to_hls(input_path: &Path, playlist_name: &str) -> Result<HlsOutput> {
-    let hls_dir = create_hls_dir()?;
-
-    let result = (|| {
-        let input_str = input_path.to_str().context("non utf-8 input path")?;
-        let generated_bitrates = generate_variant_playlists(input_str, &hls_dir)?;
-        write_master_playlist(&hls_dir, playlist_name)?;
-
-        Ok(HlsOutput {
-            output_dir: hls_dir.clone(),
-            playlist_name: playlist_name.to_string(),
-            duration_secs: get_duration(input_path),
-            bitrates: generated_bitrates,
-        })
-    })();
+pub async fn convert_to_hls(input_path: &Path, playlist_name: &str) -> Result<HlsOutput> {
+    let hls_dir = create_hls_dir().await?;
+    let result = build_hls_output(input_path, playlist_name, &hls_dir).await;
 
     match result {
         Ok(output) => Ok(output),
         Err(err) => {
-            cleanup_hls_dir(&hls_dir);
+            cleanup_hls_dir(&hls_dir).await;
             Err(err)
         }
     }
 }
 
-fn create_hls_dir() -> Result<PathBuf> {
+async fn build_hls_output(
+    input_path: &Path,
+    playlist_name: &str,
+    hls_dir: &Path,
+) -> Result<HlsOutput> {
+    let input_str = input_path.to_str().context("non utf-8 input path")?;
+    let generated_bitrates = generate_variant_playlists(input_str, hls_dir).await?;
+    write_master_playlist(hls_dir, playlist_name).await?;
+
+    Ok(HlsOutput {
+        output_dir: hls_dir.to_path_buf(),
+        playlist_name: playlist_name.to_string(),
+        duration_secs: get_duration(input_path).await,
+        bitrates: generated_bitrates,
+    })
+}
+
+async fn create_hls_dir() -> Result<PathBuf> {
     let hls_dir = std::env::temp_dir().join(format!("hls_{}", Uuid::new_v4()));
 
-    std::fs::create_dir_all(&hls_dir).context("Failed to create HLS directory")?;
+    fs::create_dir_all(&hls_dir)
+        .await
+        .context("Failed to create HLS directory")?;
 
     Ok(hls_dir)
 }
 
-fn cleanup_hls_dir(hls_dir: &Path) {
-    let _ = std::fs::remove_dir_all(hls_dir);
+async fn cleanup_hls_dir(hls_dir: &Path) {
+    let _ = fs::remove_dir_all(hls_dir).await;
 }
 
-fn generate_variant_playlists(input_str: &str, hls_dir: &Path) -> Result<Vec<u32>> {
+async fn generate_variant_playlists(input_str: &str, hls_dir: &Path) -> Result<Vec<u32>> {
     let mut generated_bitrates = Vec::with_capacity(BITRATES.len());
 
     for &(kbps, label) in BITRATES {
-        generate_variant_playlist(input_str, hls_dir, kbps, label)?;
+        generate_variant_playlist(input_str, hls_dir, kbps, label).await?;
         generated_bitrates.push(kbps);
     }
 
     Ok(generated_bitrates)
 }
 
-fn generate_variant_playlist(
+async fn generate_variant_playlist(
     input_str: &str,
     hls_dir: &Path,
     kbps: u32,
     label: &str,
 ) -> Result<()> {
     let variant_dir = hls_dir.join(label);
-    std::fs::create_dir_all(&variant_dir)
+    fs::create_dir_all(&variant_dir)
+        .await
         .with_context(|| format!("Failed to create directory {}", label))?;
 
     let playlist_path = variant_dir.join(VARIANT_PLAYLIST_FILE);
@@ -154,6 +163,7 @@ fn generate_variant_playlist(
     let output = Command::new("ffmpeg")
         .args(&args)
         .output()
+        .await
         .with_context(|| format!("ffmpeg {} failed to start", label))?;
 
     if !output.status.success() {
@@ -169,7 +179,7 @@ fn generate_variant_playlist(
         );
     }
 
-    if !playlist_path.exists() {
+    if fs::metadata(&playlist_path).await.is_err() {
         bail!("ffmpeg did not create playlist for {}", label);
     }
 
@@ -212,34 +222,43 @@ fn build_hls_ffmpeg_args(
     ])
 }
 
-fn write_master_playlist(hls_dir: &Path, playlist_name: &str) -> Result<()> {
+async fn write_master_playlist(hls_dir: &Path, playlist_name: &str) -> Result<()> {
     let master_path = hls_dir.join(playlist_name);
-    let mut master = std::fs::File::create(&master_path)
+    let mut master = fs::File::create(&master_path)
+        .await
         .with_context(|| format!("Failed to create {}", playlist_name))?;
 
-    write_master_header(&mut master, playlist_name)?;
+    write_master_header(&mut master, playlist_name).await?;
 
     for &(kbps, label) in BITRATES {
-        write_variant_stream_info(&mut master, kbps, label, playlist_name)?;
+        write_variant_stream_info(&mut master, kbps, label, playlist_name).await?;
     }
 
     Ok(())
 }
 
-fn write_master_header(master: &mut std::fs::File, playlist_name: &str) -> Result<()> {
-    writeln!(master, "#EXTM3U") // спецификация требует, чтобы #EXTM3U был первой строкой в файле
+async fn write_master_header(master: &mut fs::File, playlist_name: &str) -> Result<()> {
+    master
+        .write_all(b"#EXTM3U\n")
+        .await
         .with_context(|| format!("Error writing {}", playlist_name))
 }
 
-fn write_variant_stream_info(
-    master: &mut std::fs::File,
+async fn write_variant_stream_info(
+    master: &mut fs::File,
     kbps: u32,
     label: &str,
     playlist_name: &str,
 ) -> Result<()> {
-    writeln!(master, "{}", build_stream_info_tag(kbps))
+    let stream_info = format!("{}\n", build_stream_info_tag(kbps));
+    master
+        .write_all(stream_info.as_bytes())
+        .await
         .with_context(|| format!("Error writing {}", playlist_name))?;
-    writeln!(master, "{}/{}", label, VARIANT_PLAYLIST_FILE)
+    let variant_path = format!("{}/{}\n", label, VARIANT_PLAYLIST_FILE);
+    master
+        .write_all(variant_path.as_bytes())
+        .await
         .with_context(|| format!("Error writing {}", playlist_name))?;
     Ok(())
 }
@@ -252,11 +271,12 @@ fn build_stream_info_tag(kbps: u32) -> String {
 }
 
 /// Получаем длительность исходного файла через ffprobe
-fn get_duration(input_path: &Path) -> Option<f64> {
+async fn get_duration(input_path: &Path) -> Option<f64> {
     let output = Command::new("ffprobe")
         .args(FFPROBE_DURATION_ARGS)
         .arg(input_path)
         .output()
+        .await
         .ok()?;
 
     if !output.status.success() {

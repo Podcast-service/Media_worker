@@ -1,11 +1,11 @@
 use std::{
     path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
+use tokio::{fs, process::Command};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -44,86 +44,19 @@ pub async fn run_pipeline(
     progress: ProgressMap,
 ) -> Result<()> {
     let max_retries = load_max_retries();
+    mark_pipeline_queued(file_id, &progress);
 
-    progress.insert(
-        file_id,
-        WorkerProgress {
-            stage: WorkerStage::Queued,
-            percent: 0,
-            message: Some("Задача принята в обработку".into()),
-        },
-    );
-
-    let mut last_error = None;
-    let mut last_error_message = String::new();
-
-    for attempt in 1..=max_retries {
-        info!(
-            "Pipeline attempt {}/{} for file_id={}",
-            attempt, max_retries, file_id
-        );
-
-        match execute_pipeline(file_id, temp_path, &storage, &progress).await {
-            Ok(result) => {
-                if let Err(e) = kafka
-                    .send_converted(file_id, &result.hls_path, result.duration, result.bitrates)
-                    .await
-                {
-                    warn!("Failed to publish media.worker.converted: {}", e);
-                }
-
-                progress.insert(
-                    file_id,
-                    WorkerProgress {
-                        stage: WorkerStage::Done,
-                        percent: 100,
-                        message: Some(format!("Обработка завершена: {}", result.hls_path)),
-                    },
-                );
-
-                cleanup_temp(temp_path).await;
-
-                return Ok(());
-            }
-            Err(e) => {
-                last_error_message = format!("{e:#}");
-                last_error = Some(e);
-                warn!(
-                    "Pipeline attempt {}/{} failed for file_id={}: {}",
-                    attempt, max_retries, file_id, last_error_message
-                );
-
-                if attempt < max_retries {
-                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
-                }
-            }
+    match execute_pipeline_with_retries(file_id, temp_path, &storage, &progress, max_retries).await
+    {
+        Ok(result) => {
+            finalize_successful_pipeline(file_id, &result, &kafka, &progress, temp_path).await;
+            Ok(())
+        }
+        Err(err) => {
+            finalize_failed_pipeline(file_id, &err, &kafka, &progress, temp_path).await;
+            Err(err)
         }
     }
-
-    error!(
-        "Pipeline failed after {} retries for file_id={}: {}",
-        max_retries, file_id, last_error_message
-    );
-
-    if let Err(e) = kafka
-        .send_worker_error(file_id, "conversion", &last_error_message)
-        .await
-    {
-        warn!("Failed to publish media.worker.error: {}", e);
-    }
-
-    progress.insert(
-        file_id,
-        WorkerProgress {
-            stage: WorkerStage::Error,
-            percent: 0,
-            message: Some(last_error_message.clone()),
-        },
-    );
-
-    cleanup_temp(temp_path).await;
-
-    Err(last_error.unwrap_or_else(|| anyhow!("pipeline failed without error details")))
 }
 
 fn load_max_retries() -> u32 {
@@ -156,76 +89,18 @@ async fn execute_pipeline(
     storage: &Arc<dyn StorageBackend>,
     progress: &ProgressMap,
 ) -> Result<PipelineResult> {
-    let input = PathBuf::from(temp_path);
+    let input = ensure_source_file_exists(temp_path).await?;
+    let normalized_path = run_normalization_stage(file_id, &input, progress).await?;
+    let hls_output = match run_hls_conversion_stage(file_id, &normalized_path, progress).await {
+        Ok(output) => output,
+        Err(err) => {
+            cleanup_temp_path(&normalized_path).await;
+            return Err(err);
+        }
+    };
 
-    if !input.exists() {
-        bail!("Temporary file not found: {}", temp_path);
-    }
-
-    // ── 1. Нормализация громкости (loudnorm) ───────────────────────────
-    set_progress(progress, file_id, WorkerStage::Normalizing, 10, None);
-
-    let normalized_path = normalize_loudness(&input)?;
-
-    set_progress(progress, file_id, WorkerStage::Normalizing, 30, None);
-
-    // ── 2. HLS конвертация ──────────────────────────────────────────────
-    set_progress(
-        progress,
-        file_id,
-        WorkerStage::Converting,
-        40,
-        Some("Конвертация в HLS".into()),
-    );
-
-    let hls_input = normalized_path.clone();
-    let entry_playlist_name = format!("{}.m3u8", file_id);
-    let hls_result =
-        tokio::task::spawn_blocking(move || hls::convert_to_hls(&hls_input, &entry_playlist_name))
-            .await
-            .context("HLS task panicked")?;
-
-    let hls_output = hls_result.context("HLS conversion failed")?;
-
-    set_progress(progress, file_id, WorkerStage::Converting, 70, None);
-
-    // Чистим нормализованный файл
-    let _ = tokio::fs::remove_file(&normalized_path).await;
-
-    // ── 3. Загрузка в RustFS ────────────────────────────────────────────
-    set_progress(
-        progress,
-        file_id,
-        WorkerStage::Uploading,
-        75,
-        Some("Загрузка в хранилище".into()),
-    );
-
-    let upload_prefix = format!("media/{}", file_id);
-
-    storage
-        .ensure_bucket(HLS_BUCKET)
-        .await
-        .context("Failed to create bucket")?;
-
-    storage
-        .upload_hls_output(&hls_output, HLS_BUCKET, &upload_prefix)
-        .await
-        .context("Error uploading to storage")?;
-
-    let hls_path = format!("/media/{}/{}", file_id, hls_output.playlist_name);
-    let duration = hls_output.duration_secs.unwrap_or(0.0);
-    let bitrates = hls_output.bitrates.clone();
-
-    hls_output.cleanup().await;
-
-    set_progress(progress, file_id, WorkerStage::Uploading, 95, None);
-
-    Ok(PipelineResult {
-        hls_path,
-        duration,
-        bitrates,
-    })
+    cleanup_temp_path(&normalized_path).await;
+    upload_hls_stage(file_id, hls_output, storage, progress).await
 }
 
 // ─── Нормализация громкости (ffmpeg loudnorm) ──────────────────────────
@@ -239,15 +114,15 @@ struct LoudnormStats {
     target_offset: String,
 }
 
-fn normalize_loudness(input_path: &Path) -> Result<PathBuf> {
+async fn normalize_loudness(input_path: &Path) -> Result<PathBuf> {
     let output_path = input_path.with_extension("normalized.wav");
     let input_str = input_path.to_str().context("non utf-8 input path")?;
     let output_str = output_path.to_str().context("non utf-8 output path")?;
 
-    let stats = measure_loudness(input_str)?;
-    apply_loudness_normalization(input_str, output_str, &stats)?;
+    let stats = measure_loudness(input_str).await?;
+    apply_loudness_normalization(input_str, output_str, &stats).await?;
 
-    if !output_path.exists() {
+    if fs::metadata(&output_path).await.is_err() {
         bail!("ffmpeg did not create normalized file");
     }
 
@@ -260,12 +135,13 @@ fn normalize_loudness(input_path: &Path) -> Result<PathBuf> {
     Ok(output_path)
 }
 
-fn measure_loudness(input_str: &str) -> Result<LoudnormStats> {
+async fn measure_loudness(input_str: &str) -> Result<LoudnormStats> {
     let filter = build_measure_loudnorm_filter();
     let args = build_measure_loudnorm_args(input_str, &filter);
     let output = Command::new("ffmpeg")
         .args(&args)
         .output()
+        .await
         .context("Failed to start ffmpeg loudnorm first pass")?;
 
     if !output.status.success() {
@@ -286,7 +162,7 @@ fn measure_loudness(input_str: &str) -> Result<LoudnormStats> {
         .context("Failed to parse loudnorm first pass output")
 }
 
-fn apply_loudness_normalization(
+async fn apply_loudness_normalization(
     input_str: &str,
     output_str: &str,
     stats: &LoudnormStats,
@@ -296,6 +172,7 @@ fn apply_loudness_normalization(
     let output = Command::new("ffmpeg")
         .args(&args)
         .output()
+        .await
         .context("Failed to start ffmpeg loudnorm second pass")?;
 
     if !output.status.success() {
@@ -351,6 +228,224 @@ fn build_measure_loudnorm_filter() -> String {
     )
 }
 
+async fn execute_pipeline_with_retries(
+    file_id: Uuid,
+    temp_path: &str,
+    storage: &Arc<dyn StorageBackend>,
+    progress: &ProgressMap,
+    max_retries: u32,
+) -> Result<PipelineResult> {
+    let mut last_error = anyhow!("pipeline failed without error details");
+
+    for attempt in 1..=max_retries {
+        log_pipeline_attempt_start(attempt, max_retries, file_id);
+
+        match execute_pipeline(file_id, temp_path, storage, progress).await {
+            Ok(result) => return Ok(result),
+            Err(err) => {
+                log_pipeline_attempt_failure(attempt, max_retries, file_id, &err);
+                last_error = err;
+
+                if attempt < max_retries {
+                    wait_before_retry(attempt).await;
+                }
+            }
+        }
+    }
+
+    Err(last_error)
+}
+
+async fn ensure_source_file_exists(temp_path: &str) -> Result<PathBuf> {
+    let input = PathBuf::from(temp_path);
+    if fs::metadata(&input).await.is_err() {
+        bail!("Temporary file not found: {}", temp_path);
+    }
+    Ok(input)
+}
+
+async fn run_normalization_stage(
+    file_id: Uuid,
+    input: &Path,
+    progress: &ProgressMap,
+) -> Result<PathBuf> {
+    set_progress(progress, file_id, WorkerStage::Normalizing, 10, None);
+    let normalized_path = normalize_loudness(input).await?;
+    set_progress(progress, file_id, WorkerStage::Normalizing, 30, None);
+    Ok(normalized_path)
+}
+
+async fn run_hls_conversion_stage(
+    file_id: Uuid,
+    normalized_path: &Path,
+    progress: &ProgressMap,
+) -> Result<hls::HlsOutput> {
+    set_progress(
+        progress,
+        file_id,
+        WorkerStage::Converting,
+        40,
+        Some("Конвертация в HLS".into()),
+    );
+
+    let hls_input = normalized_path.to_path_buf();
+    let entry_playlist_name = format!("{}.m3u8", file_id);
+    let hls_output = hls::convert_to_hls(&hls_input, &entry_playlist_name)
+        .await
+        .context("HLS conversion failed")?;
+    set_progress(progress, file_id, WorkerStage::Converting, 70, None);
+    Ok(hls_output)
+}
+
+async fn upload_hls_stage(
+    file_id: Uuid,
+    hls_output: hls::HlsOutput,
+    storage: &Arc<dyn StorageBackend>,
+    progress: &ProgressMap,
+) -> Result<PipelineResult> {
+    set_progress(
+        progress,
+        file_id,
+        WorkerStage::Uploading,
+        75,
+        Some("Загрузка в хранилище".into()),
+    );
+
+    let upload_prefix = format!("media/{}", file_id);
+
+    let upload_result = perform_hls_upload(storage, &hls_output, &upload_prefix).await;
+    if let Err(err) = upload_result {
+        hls_output.cleanup().await;
+        return Err(err);
+    }
+
+    let result = PipelineResult {
+        hls_path: format!("/media/{}/{}", file_id, hls_output.playlist_name),
+        duration: hls_output.duration_secs.unwrap_or(0.0),
+        bitrates: hls_output.bitrates.clone(),
+    };
+
+    hls_output.cleanup().await;
+    set_progress(progress, file_id, WorkerStage::Uploading, 95, None);
+
+    Ok(result)
+}
+
+async fn perform_hls_upload(
+    storage: &Arc<dyn StorageBackend>,
+    hls_output: &hls::HlsOutput,
+    upload_prefix: &str,
+) -> Result<()> {
+    storage
+        .ensure_bucket(HLS_BUCKET)
+        .await
+        .context("Failed to create bucket")?;
+    storage
+        .upload_hls_output(&hls_output, HLS_BUCKET, &upload_prefix)
+        .await
+        .context("Error uploading to storage")
+}
+
+fn mark_pipeline_queued(file_id: Uuid, progress: &ProgressMap) {
+    progress.insert(
+        file_id,
+        WorkerProgress {
+            stage: WorkerStage::Queued,
+            percent: 0,
+            message: Some("Задача принята в обработку".into()),
+        },
+    );
+}
+
+async fn finalize_successful_pipeline(
+    file_id: Uuid,
+    result: &PipelineResult,
+    kafka: &SharedKafkaProducer,
+    progress: &ProgressMap,
+    temp_path: &str,
+) {
+    if let Err(e) = kafka
+        .send_converted(
+            file_id,
+            &result.hls_path,
+            result.duration,
+            result.bitrates.clone(),
+        )
+        .await
+    {
+        warn!("Failed to publish media.worker.converted: {}", e);
+    }
+
+    progress.insert(
+        file_id,
+        WorkerProgress {
+            stage: WorkerStage::Done,
+            percent: 100,
+            message: Some(format!("Обработка завершена: {}", result.hls_path)),
+        },
+    );
+
+    cleanup_temp(temp_path).await;
+}
+
+async fn finalize_failed_pipeline(
+    file_id: Uuid,
+    err: &anyhow::Error,
+    kafka: &SharedKafkaProducer,
+    progress: &ProgressMap,
+    temp_path: &str,
+) {
+    let error_message = format!("{err:#}");
+    error!(
+        "Pipeline failed after retries for file_id={}: {}",
+        file_id, error_message
+    );
+
+    if let Err(e) = kafka
+        .send_worker_error(file_id, "conversion", &error_message)
+        .await
+    {
+        warn!("Failed to publish media.worker.error: {}", e);
+    }
+
+    progress.insert(
+        file_id,
+        WorkerProgress {
+            stage: WorkerStage::Error,
+            percent: 0,
+            message: Some(error_message),
+        },
+    );
+
+    cleanup_temp(temp_path).await;
+}
+
+fn log_pipeline_attempt_start(attempt: u32, max_retries: u32, file_id: Uuid) {
+    info!(
+        "Pipeline attempt {}/{} for file_id={}",
+        attempt, max_retries, file_id
+    );
+}
+
+fn log_pipeline_attempt_failure(
+    attempt: u32,
+    max_retries: u32,
+    file_id: Uuid,
+    err: &anyhow::Error,
+) {
+    warn!(
+        "Pipeline attempt {}/{} failed for file_id={}: {}",
+        attempt,
+        max_retries,
+        file_id,
+        format!("{err:#}")
+    );
+}
+
+async fn wait_before_retry(attempt: u32) {
+    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+}
+
 fn build_second_pass_loudnorm_filter(stats: &LoudnormStats) -> String {
     format!(
         "loudnorm=I={}:TP={}:LRA={}:measured_I={}:measured_TP={}:measured_LRA={}:measured_thresh={}:offset={}:linear=true:print_format=summary",
@@ -400,5 +495,16 @@ fn set_progress(
 async fn cleanup_temp(path: &str) {
     if let Err(e) = tokio::fs::remove_file(path).await {
         debug!("Failed to cleanup temp file {}: {}", path, e);
+    }
+}
+
+async fn cleanup_temp_path(path: &Path) {
+    if let Some(path) = path.to_str() {
+        cleanup_temp(path).await;
+        return;
+    }
+
+    if let Err(e) = tokio::fs::remove_file(path).await {
+        debug!("Failed to cleanup temp file {}: {}", path.display(), e);
     }
 }

@@ -27,6 +27,30 @@ pub async fn run_media_consumer(
     kafka: SharedKafkaProducer,
     progress: ProgressMap,
 ) -> Result<()> {
+    let consumer = create_consumer(brokers)?;
+    info!(
+        "Kafka consumer started: listening on '{}' (group={})",
+        TOPIC, GROUP_ID
+    );
+
+    let mut stream = consumer.stream();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(msg) => {
+                handle_kafka_message(msg, &storage, &kafka, &progress).await;
+            }
+            Err(e) => {
+                error!("Kafka consumer error: {}", e);
+            }
+        }
+    }
+
+    warn!("Kafka consumer stream ended unexpectedly");
+    Ok(())
+}
+
+fn create_consumer(brokers: &str) -> Result<StreamConsumer> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
         .set("group.id", GROUP_ID)
@@ -39,76 +63,93 @@ pub async fn run_media_consumer(
         .subscribe(&[TOPIC])
         .context("Failed to subscribe to media topic")?;
 
-    info!(
-        "Kafka consumer started: listening on '{}' (group={})",
-        TOPIC, GROUP_ID
-    );
+    Ok(consumer)
+}
 
-    let mut stream = consumer.stream();
+async fn handle_kafka_message(
+    msg: rdkafka::message::BorrowedMessage<'_>,
+    storage: &Arc<dyn StorageBackend>,
+    kafka: &SharedKafkaProducer,
+    progress: &ProgressMap,
+) {
+    let Some(payload) = decode_payload(&msg) else {
+        return;
+    };
 
-    while let Some(result) = stream.next().await {
-        match result {
-            Ok(msg) => {
-                let payload = match msg.payload_view::<str>() {
-                    Some(Ok(text)) => text,
-                    Some(Err(e)) => {
-                        warn!("Error decoding Kafka message payload: {}", e);
-                        continue;
-                    }
-                    None => {
-                        warn!("Empty Kafka message on {}", TOPIC);
-                        continue;
-                    }
-                };
+    match parse_media_event(payload) {
+        Ok(event) => dispatch_media_event(event, storage, kafka, progress).await,
+        Err(e) => warn!("Failed to parse media event payload: {}", e),
+    }
+}
 
-                match serde_json::from_str::<MediaEvent>(payload) {
-                    Ok(MediaEvent::Uploaded {
-                        file_id,
-                        author_id,
-                        size_bytes,
-                        original_format,
-                        temp_path,
-                        uploaded_at: _,
-                    }) => {
-                        if temp_path.is_empty() {
-                            warn!(
-                                "Received media.uploaded with empty temp_path for file_id={}",
-                                file_id
-                            );
-                            continue;
-                        }
-
-                        handle_uploaded(
-                            file_id,
-                            author_id,
-                            size_bytes,
-                            original_format,
-                            temp_path,
-                            &storage,
-                            &kafka,
-                            &progress,
-                        )
-                        .await;
-                    }
-                    Ok(MediaEvent::Deleted {
-                        file_id,
-                        deleted_at: _,
-                    }) => {
-                        handle_deleted(file_id, &storage, &kafka).await;
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse media event payload: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Kafka consumer error: {}", e);
-            }
+fn decode_payload<'a>(msg: &'a rdkafka::message::BorrowedMessage<'a>) -> Option<&'a str> {
+    match msg.payload_view::<str>() {
+        Some(Ok(text)) => Some(text),
+        Some(Err(e)) => {
+            warn!("Error decoding Kafka message payload: {}", e);
+            None
+        }
+        None => {
+            warn!("Empty Kafka message on {}", TOPIC);
+            None
         }
     }
+}
 
-    warn!("Kafka consumer stream ended unexpectedly");
-    Ok(())
+fn parse_media_event(payload: &str) -> Result<MediaEvent> {
+    serde_json::from_str::<MediaEvent>(payload).context("Failed to deserialize media event")
+}
+
+async fn dispatch_media_event(
+    event: MediaEvent,
+    storage: &Arc<dyn StorageBackend>,
+    kafka: &SharedKafkaProducer,
+    progress: &ProgressMap,
+) {
+    match event {
+        MediaEvent::Uploaded {
+            file_id,
+            author_id,
+            size_bytes,
+            original_format,
+            temp_path,
+            uploaded_at: _,
+        } => {
+            if !validate_uploaded_temp_path(&file_id, &temp_path) {
+                return;
+            }
+
+            handle_uploaded(
+                file_id,
+                author_id,
+                size_bytes,
+                original_format,
+                temp_path,
+                storage,
+                kafka,
+                progress,
+            )
+            .await;
+        }
+        MediaEvent::Deleted {
+            file_id,
+            deleted_at: _,
+        } => {
+            handle_deleted(file_id, storage, kafka).await;
+        }
+    }
+}
+
+fn validate_uploaded_temp_path(file_id: &str, temp_path: &str) -> bool {
+    if temp_path.is_empty() {
+        warn!(
+            "Received media.uploaded with empty temp_path for file_id={}",
+            file_id
+        );
+        return false;
+    }
+
+    true
 }
 
 async fn handle_uploaded(

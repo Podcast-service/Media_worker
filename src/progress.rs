@@ -89,38 +89,21 @@ pub async fn progress_sse(
 
     let stream: SseStream = Box::pin(async_stream::stream! {
         let mut interval = tokio::time::interval(config.poll_interval);
-        let wait_deadline = tokio::time::Instant::now() + config.wait_timeout;
-
-        while !progress_map.contains_key(&file_id) {
-            if tokio::time::Instant::now() >= wait_deadline {
-                yield Ok(Event::default()
-                    .event("error")
-                    .data(r#"{"error":"file_id not found in worker"}"#));
-                return;
-            }
-            tokio::time::sleep(config.poll_interval).await;
+        if !wait_for_progress_registration(&progress_map, file_id, &config).await {
+            yield Ok(build_missing_file_event());
+            return;
         }
 
         loop {
             interval.tick().await;
+            let Some(progress) = load_progress_snapshot(&progress_map, file_id) else {
+                break;
+            };
 
-            let entry = progress_map.get(&file_id);
+            yield Ok(progress_to_sse_event(&progress));
 
-            match entry {
-                Some(p) => {
-                    let progress = p.clone();
-                    drop(p);
-
-                    let json = serde_json::to_string(&progress).unwrap_or_default();
-                    yield Ok(Event::default().data(json));
-
-                    if progress.stage == WorkerStage::Done || progress.stage == WorkerStage::Error {
-                        break;
-                    }
-                }
-                None => {
-                    break;
-                }
+            if is_terminal_stage(&progress.stage) {
+                break;
             }
         }
 
@@ -132,6 +115,46 @@ pub async fn progress_sse(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+async fn wait_for_progress_registration(
+    progress_map: &ProgressMap,
+    file_id: Uuid,
+    config: &ProgressConfig,
+) -> bool {
+    let wait_deadline = tokio::time::Instant::now() + config.wait_timeout;
+
+    while !progress_map.contains_key(&file_id) {
+        if tokio::time::Instant::now() >= wait_deadline {
+            return false;
+        }
+
+        tokio::time::sleep(config.poll_interval).await;
+    }
+
+    true
+}
+
+fn build_missing_file_event() -> Event {
+    Event::default()
+        .event("error")
+        .data(r#"{"error":"file_id not found in worker"}"#)
+}
+
+fn load_progress_snapshot(progress_map: &ProgressMap, file_id: Uuid) -> Option<WorkerProgress> {
+    let entry = progress_map.get(&file_id)?;
+    let progress = entry.clone();
+    drop(entry);
+    Some(progress)
+}
+
+fn progress_to_sse_event(progress: &WorkerProgress) -> Event {
+    let json = serde_json::to_string(progress).unwrap_or_default();
+    Event::default().data(json)
+}
+
+fn is_terminal_stage(stage: &WorkerStage) -> bool {
+    matches!(stage, WorkerStage::Done | WorkerStage::Error)
 }
 
 fn load_duration_from_env(env_name: &str, default_ms: u64) -> Duration {
