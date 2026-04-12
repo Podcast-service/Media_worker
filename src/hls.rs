@@ -4,6 +4,7 @@ use std::{
     process::Command,
 };
 
+use anyhow::{bail, Context, Result};
 use tokio::fs;
 use tracing::warn;
 use uuid::Uuid;
@@ -31,7 +32,7 @@ pub struct HlsOutput {
 
 impl HlsOutput {
     /// Рекурсивно собирает все файлы с относительными путями от `output_dir`
-    pub async fn list_files_relative(&self) -> Result<Vec<(PathBuf, String)>, String> {
+    pub async fn list_files_relative(&self) -> Result<Vec<(PathBuf, String)>> {
         let mut result = Vec::new();
         collect_files_iterative(&self.output_dir, &mut result).await?;
         result.sort_by(|a, b| a.1.cmp(&b.1));
@@ -44,21 +45,18 @@ impl HlsOutput {
 }
 
 /// Итеративный обход: собирает `(абсолютный_путь, относительный_ключ)`
-async fn collect_files_iterative(
-    base: &Path,
-    out: &mut Vec<(PathBuf, String)>,
-) -> Result<(), String> {
+async fn collect_files_iterative(base: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
     let mut dirs = vec![base.to_path_buf()];
 
     while let Some(dir) = dirs.pop() {
         let mut entries = fs::read_dir(&dir)
             .await
-            .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
+            .with_context(|| format!("Failed to read directory {}", dir.display()))?;
 
         while let Some(entry) = entries
             .next_entry()
             .await
-            .map_err(|e| format!("Read error: {}", e))?
+            .context("Failed to read directory entry")?
         {
             let path = entry.path();
             if path.is_dir() {
@@ -66,7 +64,7 @@ async fn collect_files_iterative(
             } else if path.is_file() {
                 let rel = path
                     .strip_prefix(base)
-                    .map_err(|e| format!("strip_prefix: {}", e))?
+                    .context("Failed to build relative path")?
                     .to_string_lossy()
                     .to_string();
                 out.push((path, rel));
@@ -91,11 +89,11 @@ async fn collect_files_iterative(
 ///     playlist.m3u8
 ///     seg_00000.m4s ...
 /// ```
-pub fn convert_to_hls(input_path: &Path, playlist_name: &str) -> Result<HlsOutput, String> {
+pub fn convert_to_hls(input_path: &Path, playlist_name: &str) -> Result<HlsOutput> {
     let hls_dir = create_hls_dir()?;
 
     let result = (|| {
-        let input_str = input_path.to_str().ok_or("non utf-8 input path")?;
+        let input_str = input_path.to_str().context("non utf-8 input path")?;
         let generated_bitrates = generate_variant_playlists(input_str, &hls_dir)?;
         write_master_playlist(&hls_dir, playlist_name)?;
 
@@ -116,11 +114,10 @@ pub fn convert_to_hls(input_path: &Path, playlist_name: &str) -> Result<HlsOutpu
     }
 }
 
-fn create_hls_dir() -> Result<PathBuf, String> {
+fn create_hls_dir() -> Result<PathBuf> {
     let hls_dir = std::env::temp_dir().join(format!("hls_{}", Uuid::new_v4()));
 
-    std::fs::create_dir_all(&hls_dir)
-        .map_err(|e| format!("Failed to create HLS directory: {}", e))?;
+    std::fs::create_dir_all(&hls_dir).context("Failed to create HLS directory")?;
 
     Ok(hls_dir)
 }
@@ -129,7 +126,7 @@ fn cleanup_hls_dir(hls_dir: &Path) {
     let _ = std::fs::remove_dir_all(hls_dir);
 }
 
-fn generate_variant_playlists(input_str: &str, hls_dir: &Path) -> Result<Vec<u32>, String> {
+fn generate_variant_playlists(input_str: &str, hls_dir: &Path) -> Result<Vec<u32>> {
     let mut generated_bitrates = Vec::with_capacity(BITRATES.len());
 
     for &(kbps, label) in BITRATES {
@@ -145,10 +142,10 @@ fn generate_variant_playlist(
     hls_dir: &Path,
     kbps: u32,
     label: &str,
-) -> Result<(), String> {
+) -> Result<()> {
     let variant_dir = hls_dir.join(label);
     std::fs::create_dir_all(&variant_dir)
-        .map_err(|e| format!("Failed to create directory {}: {}", label, e))?;
+        .with_context(|| format!("Failed to create directory {}", label))?;
 
     let playlist_path = variant_dir.join(VARIANT_PLAYLIST_FILE);
     let segment_pattern = variant_dir.join(SEGMENT_FILE_PATTERN);
@@ -157,11 +154,11 @@ fn generate_variant_playlist(
     let output = Command::new("ffmpeg")
         .args(&args)
         .output()
-        .map_err(|e| format!("ffmpeg {} failed to start: {}", label, e))?;
+        .with_context(|| format!("ffmpeg {} failed to start", label))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
+        bail!(
             "ffmpeg HLS {} failed: {}",
             label,
             if stderr.trim().is_empty() {
@@ -169,11 +166,11 @@ fn generate_variant_playlist(
             } else {
                 stderr.trim().to_string()
             }
-        ));
+        );
     }
 
     if !playlist_path.exists() {
-        return Err(format!("ffmpeg did not create playlist for {}", label));
+        bail!("ffmpeg did not create playlist for {}", label);
     }
 
     Ok(())
@@ -184,9 +181,9 @@ fn build_hls_ffmpeg_args(
     kbps: u32,
     segment_pattern: &Path,
     playlist_path: &Path,
-) -> Result<Vec<String>, String> {
-    let segment_pattern = segment_pattern.to_str().ok_or("non utf-8 path")?;
-    let playlist_path = playlist_path.to_str().ok_or("non utf-8 path")?;
+) -> Result<Vec<String>> {
+    let segment_pattern = segment_pattern.to_str().context("non utf-8 path")?;
+    let playlist_path = playlist_path.to_str().context("non utf-8 path")?;
 
     Ok(vec![
         "-i".to_string(),
@@ -215,10 +212,10 @@ fn build_hls_ffmpeg_args(
     ])
 }
 
-fn write_master_playlist(hls_dir: &Path, playlist_name: &str) -> Result<(), String> {
+fn write_master_playlist(hls_dir: &Path, playlist_name: &str) -> Result<()> {
     let master_path = hls_dir.join(playlist_name);
     let mut master = std::fs::File::create(&master_path)
-        .map_err(|e| format!("Failed to create {}: {}", playlist_name, e))?;
+        .with_context(|| format!("Failed to create {}", playlist_name))?;
 
     write_master_header(&mut master, playlist_name)?;
 
@@ -229,9 +226,9 @@ fn write_master_playlist(hls_dir: &Path, playlist_name: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn write_master_header(master: &mut std::fs::File, playlist_name: &str) -> Result<(), String> {
+fn write_master_header(master: &mut std::fs::File, playlist_name: &str) -> Result<()> {
     writeln!(master, "#EXTM3U") // спецификация требует, чтобы #EXTM3U был первой строкой в файле
-        .map_err(|e| format!("Error writing {}: {}", playlist_name, e))
+        .with_context(|| format!("Error writing {}", playlist_name))
 }
 
 fn write_variant_stream_info(
@@ -239,11 +236,11 @@ fn write_variant_stream_info(
     kbps: u32,
     label: &str,
     playlist_name: &str,
-) -> Result<(), String> {
+) -> Result<()> {
     writeln!(master, "{}", build_stream_info_tag(kbps))
-        .map_err(|e| format!("Error writing {}: {}", playlist_name, e))?;
+        .with_context(|| format!("Error writing {}", playlist_name))?;
     writeln!(master, "{}/{}", label, VARIANT_PLAYLIST_FILE)
-        .map_err(|e| format!("Error writing {}: {}", playlist_name, e))?;
+        .with_context(|| format!("Error writing {}", playlist_name))?;
     Ok(())
 }
 

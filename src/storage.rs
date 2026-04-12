@@ -20,10 +20,7 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<()>;
 
     async fn upload_hls_output(&self, hls: &HlsOutput, bucket: &str, prefix: &str) -> Result<()> {
-        let files = hls
-            .list_files_relative()
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let files = hls.list_files_relative().await?;
 
         info!(
             "[{}] Uploading {} HLS files to {}/{}",

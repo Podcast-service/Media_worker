@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -41,7 +42,7 @@ pub async fn run_pipeline(
     storage: Arc<dyn StorageBackend>,
     kafka: SharedKafkaProducer,
     progress: ProgressMap,
-) -> Result<(), String> {
+) -> Result<()> {
     let max_retries = load_max_retries();
 
     progress.insert(
@@ -53,7 +54,8 @@ pub async fn run_pipeline(
         },
     );
 
-    let mut last_error = String::new();
+    let mut last_error = None;
+    let mut last_error_message = String::new();
 
     for attempt in 1..=max_retries {
         info!(
@@ -84,10 +86,11 @@ pub async fn run_pipeline(
                 return Ok(());
             }
             Err(e) => {
-                last_error = e.clone();
+                last_error_message = format!("{e:#}");
+                last_error = Some(e);
                 warn!(
                     "Pipeline attempt {}/{} failed for file_id={}: {}",
-                    attempt, max_retries, file_id, e
+                    attempt, max_retries, file_id, last_error_message
                 );
 
                 if attempt < max_retries {
@@ -99,11 +102,11 @@ pub async fn run_pipeline(
 
     error!(
         "Pipeline failed after {} retries for file_id={}: {}",
-        max_retries, file_id, last_error
+        max_retries, file_id, last_error_message
     );
 
     if let Err(e) = kafka
-        .send_worker_error(file_id, "conversion", &last_error)
+        .send_worker_error(file_id, "conversion", &last_error_message)
         .await
     {
         warn!("Failed to publish media.worker.error: {}", e);
@@ -114,13 +117,13 @@ pub async fn run_pipeline(
         WorkerProgress {
             stage: WorkerStage::Error,
             percent: 0,
-            message: Some(last_error.clone()),
+            message: Some(last_error_message.clone()),
         },
     );
 
     cleanup_temp(temp_path).await;
 
-    Err(last_error)
+    Err(last_error.unwrap_or_else(|| anyhow!("pipeline failed without error details")))
 }
 
 fn load_max_retries() -> u32 {
@@ -152,11 +155,11 @@ async fn execute_pipeline(
     temp_path: &str,
     storage: &Arc<dyn StorageBackend>,
     progress: &ProgressMap,
-) -> Result<PipelineResult, String> {
+) -> Result<PipelineResult> {
     let input = PathBuf::from(temp_path);
 
     if !input.exists() {
-        return Err(format!("Temporary file not found: {}", temp_path));
+        bail!("Temporary file not found: {}", temp_path);
     }
 
     // ── 1. Нормализация громкости (loudnorm) ───────────────────────────
@@ -180,9 +183,9 @@ async fn execute_pipeline(
     let hls_result =
         tokio::task::spawn_blocking(move || hls::convert_to_hls(&hls_input, &entry_playlist_name))
             .await
-            .map_err(|e| format!("HLS task panicked: {}", e))?;
+            .context("HLS task panicked")?;
 
-    let hls_output = hls_result.map_err(|e| format!("HLS conversion failed: {}", e))?;
+    let hls_output = hls_result.context("HLS conversion failed")?;
 
     set_progress(progress, file_id, WorkerStage::Converting, 70, None);
 
@@ -203,12 +206,12 @@ async fn execute_pipeline(
     storage
         .ensure_bucket(HLS_BUCKET)
         .await
-        .map_err(|e| format!("Failed to create bucket: {}", e))?;
+        .context("Failed to create bucket")?;
 
     storage
         .upload_hls_output(&hls_output, HLS_BUCKET, &upload_prefix)
         .await
-        .map_err(|e| format!("Error uploading to storage: {}", e))?;
+        .context("Error uploading to storage")?;
 
     let hls_path = format!("/media/{}/{}", file_id, hls_output.playlist_name);
     let duration = hls_output.duration_secs.unwrap_or(0.0);
@@ -236,16 +239,16 @@ struct LoudnormStats {
     target_offset: String,
 }
 
-fn normalize_loudness(input_path: &Path) -> Result<PathBuf, String> {
+fn normalize_loudness(input_path: &Path) -> Result<PathBuf> {
     let output_path = input_path.with_extension("normalized.wav");
-    let input_str = input_path.to_str().ok_or("non utf-8 input path")?;
-    let output_str = output_path.to_str().ok_or("non utf-8 output path")?;
+    let input_str = input_path.to_str().context("non utf-8 input path")?;
+    let output_str = output_path.to_str().context("non utf-8 output path")?;
 
     let stats = measure_loudness(input_str)?;
     apply_loudness_normalization(input_str, output_str, &stats)?;
 
     if !output_path.exists() {
-        return Err("ffmpeg did not create normalized file".to_string());
+        bail!("ffmpeg did not create normalized file");
     }
 
     info!(
@@ -257,54 +260,54 @@ fn normalize_loudness(input_path: &Path) -> Result<PathBuf, String> {
     Ok(output_path)
 }
 
-fn measure_loudness(input_str: &str) -> Result<LoudnormStats, String> {
+fn measure_loudness(input_str: &str) -> Result<LoudnormStats> {
     let filter = build_measure_loudnorm_filter();
     let args = build_measure_loudnorm_args(input_str, &filter);
     let output = Command::new("ffmpeg")
         .args(&args)
         .output()
-        .map_err(|e| format!("Failed to start ffmpeg loudnorm first pass: {}", e))?;
+        .context("Failed to start ffmpeg loudnorm first pass")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
+        bail!(
             "ffmpeg loudnorm first pass failed: {}",
             if stderr.trim().is_empty() {
                 format!("exit code {}", output.status)
             } else {
                 stderr.trim().to_string()
             }
-        ));
+        );
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let json = extract_loudnorm_json(&stderr)?;
     serde_json::from_str::<LoudnormStats>(&json)
-        .map_err(|e| format!("Failed to parse loudnorm first pass output: {}", e))
+        .context("Failed to parse loudnorm first pass output")
 }
 
 fn apply_loudness_normalization(
     input_str: &str,
     output_str: &str,
     stats: &LoudnormStats,
-) -> Result<(), String> {
+) -> Result<()> {
     let filter = build_second_pass_loudnorm_filter(stats);
     let args = build_apply_loudnorm_args(input_str, output_str, &filter);
     let output = Command::new("ffmpeg")
         .args(&args)
         .output()
-        .map_err(|e| format!("Failed to start ffmpeg loudnorm second pass: {}", e))?;
+        .context("Failed to start ffmpeg loudnorm second pass")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
+        bail!(
             "ffmpeg loudnorm second pass failed: {}",
             if stderr.trim().is_empty() {
                 format!("exit code {}", output.status)
             } else {
                 stderr.trim().to_string()
             }
-        ));
+        );
     }
 
     Ok(())
@@ -362,16 +365,16 @@ fn build_second_pass_loudnorm_filter(stats: &LoudnormStats) -> String {
     )
 }
 
-fn extract_loudnorm_json(stderr: &str) -> Result<String, String> {
+fn extract_loudnorm_json(stderr: &str) -> Result<String> {
     let start = stderr
         .find('{')
-        .ok_or("ffmpeg loudnorm first pass did not return JSON start")?;
+        .context("ffmpeg loudnorm first pass did not return JSON start")?;
     let end = stderr
         .rfind('}')
-        .ok_or("ffmpeg loudnorm first pass did not return JSON end")?;
+        .context("ffmpeg loudnorm first pass did not return JSON end")?;
 
     if end < start {
-        return Err("ffmpeg loudnorm first pass returned malformed JSON".to_string());
+        bail!("ffmpeg loudnorm first pass returned malformed JSON");
     }
 
     Ok(stderr[start..=end].to_string())
