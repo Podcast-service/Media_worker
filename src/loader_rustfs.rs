@@ -10,6 +10,10 @@ use tracing::{error, info, warn};
 const RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV: &str = "RUSTFS_UPLOAD_BUFFER_SIZE_BYTES";
 const DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES: usize = 64 * 1024;
 const MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES: usize = 4 * 1024;
+const DEFAULT_RUSTFS_REGION: &str = "us-east-1";
+const DEFAULT_RUSTFS_ACCESS_KEY_ID: &str = "rustfsadmin";
+const DEFAULT_RUSTFS_SECRET_ACCESS_KEY: &str = "rustfsadmin";
+const DEFAULT_RUSTFS_ENDPOINT_URL: &str = "http://rustfs:9000";
 
 pub struct Config {
     pub region: String,
@@ -21,10 +25,13 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            region: env::var("RUSTFS_REGION")?,
-            access_key_id: env::var("RUSTFS_ACCESS_KEY_ID")?,
-            secret_access_key: env::var("RUSTFS_SECRET_ACCESS_KEY")?,
-            endpoint_url: env::var("RUSTFS_ENDPOINT_URL")?,
+            region: env::var("RUSTFS_REGION").unwrap_or_else(|_| DEFAULT_RUSTFS_REGION.to_string()),
+            access_key_id: env::var("RUSTFS_ACCESS_KEY_ID")
+                .unwrap_or_else(|_| DEFAULT_RUSTFS_ACCESS_KEY_ID.to_string()),
+            secret_access_key: env::var("RUSTFS_SECRET_ACCESS_KEY")
+                .unwrap_or_else(|_| DEFAULT_RUSTFS_SECRET_ACCESS_KEY.to_string()),
+            endpoint_url: env::var("RUSTFS_ENDPOINT_URL")
+                .unwrap_or_else(|_| DEFAULT_RUSTFS_ENDPOINT_URL.to_string()),
         })
     }
 }

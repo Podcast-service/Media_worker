@@ -71,6 +71,7 @@ async fn main() {
 
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .route("/health", get(health))
         .route(
             "/api/media/worker/progress/:file_id",
             get(progress::progress_sse),
@@ -98,4 +99,8 @@ fn consumer_restart_delay() -> Duration {
         .filter(|seconds| *seconds > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(5))
+}
+
+async fn health() -> &'static str {
+    "ok"
 }
