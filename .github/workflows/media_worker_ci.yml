@@ -1,0 +1,56 @@
+name: Media worker CI/CD
+
+on:
+  pull_request:
+    branches: [ main ]
+    types:
+      - opened
+      - synchronize
+      - closed
+
+jobs:
+  build-check:
+    if: github.event.pull_request.merged == false
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build check
+        run: docker build -t malblsh/media_worker:pr-${{ github.event.pull_request.number }} .
+
+  deploy:
+    if: github.event.pull_request.merged == true
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set SHA tag
+        id: vars
+        run: echo "SHA=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Login to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKERHUB_PASSWORD }}" | \
+          docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          docker build \
+            -t malblsh/media_worker:${{ steps.vars.outputs.SHA }} \
+            -t malblsh/media_worker:latest \
+            .
+          docker push malblsh/media_worker:${{ steps.vars.outputs.SHA }}
+          docker push malblsh/media_worker:latest
+
+      - name: Trigger deploy
+        run: |
+          curl -X POST \
+          -H "Authorization: token ${{ secrets.DEPLOY_REPO_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/Podcast-service/Podcast_Service/dispatches \
+          -d '{
+            "event_type": "deploy",
+            "client_payload": {
+              "service": "media_worker",
+              "image_tag": "${{ steps.vars.outputs.SHA }}"
+            }
+          }'
