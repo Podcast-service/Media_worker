@@ -4,6 +4,18 @@
 
 Отдельный контракт Kafka-событий зафиксирован в [docs/kafka-contract.md](./docs/kafka-contract.md).
 
+## Самодостаточность сервиса
+
+Директория `Media_worker` содержит всё, что нужно для сборки и запуска самого worker:
+
+- `Cargo.toml` и `Cargo.lock` - Rust-зависимости сервиса;
+- `Dockerfile` - standalone-сборка образа worker, включая runtime-зависимость `ffmpeg`;
+- `compose.yml` - локальный стенд с Kafka, RustFS и самим worker;
+- `docs/kafka-contract.md` - контракт входящих и исходящих Kafka-событий;
+- `.gitignore` и `.dockerignore` - исключают build artifacts, локальные env-файлы, editor files, логи и runtime media-файлы.
+
+Код `Media_api` и `Media_subtitle_worker` не нужен для сборки worker. Связь с API идёт через Kafka JSON и общий путь `temp_path`; связь с subtitle worker - через HLS/audio-объекты в S3-compatible storage и Kafka-события.
+
 Сервис делает три вещи:
 
 1. Обрабатывает событие загрузки файла и конвертирует его в HLS.
@@ -27,6 +39,8 @@
 
 1. Тестовый стенд для разработчика или тестировщика, где вместе с воркером поднимаются Kafka, RustFS, топики и бакет.
 2. Продовый запуск, где `media_worker` стартует отдельно и подключается к уже существующим Kafka и S3.
+
+Dockerfile сервиса самодостаточен: для сборки нужны только файлы из директории `Media_worker`. Сервис не зависит от кода `Media_api`; контракт между ними - Kafka JSON и общий volume для `temp_path`.
 
 ## Сценарий 1. Тестовый стенд для разработки и QA
 
@@ -118,7 +132,6 @@ curl -N "http://localhost:8082/api/media/worker/progress/$FILE_ID"
 - отправит событие в топик `media.worker`.
 
 
-# ПОКА НЕ ПРОВЕРЯЛ ИМЕННО ЭТО РЕШЕНИЕ!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ## Сценарий 2. Продовый запуск с внешними Kafka и S3
 
 Этот сценарий нужен для реального окружения, где Kafka и S3 уже существуют и управляются отдельно от воркера.

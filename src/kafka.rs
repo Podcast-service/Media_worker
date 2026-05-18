@@ -15,6 +15,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum MediaEvent {
+    StartUpload {
+        file_id: String,
+        author_id: String,
+        filename: String,
+        started_at: DateTime<Utc>,
+    },
     Uploaded {
         file_id: String,
         author_id: String,
@@ -22,6 +28,12 @@ pub enum MediaEvent {
         original_format: String,
         temp_path: String,
         uploaded_at: DateTime<Utc>,
+    },
+    Error {
+        file_id: String,
+        stage: String,
+        error_message: String,
+        timestamp: DateTime<Utc>,
     },
     Deleted {
         file_id: String,
@@ -63,6 +75,11 @@ impl KafkaProducer {
         let producer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "5000")
+            .set("message.send.max.retries", "10")
+            .set("retry.backoff.ms", "500")
+            .set("reconnect.backoff.ms", "500")
+            .set("reconnect.backoff.max.ms", "10000")
+            .set("socket.keepalive.enable", "true")
             .create::<FutureProducer>()
             .context("Failed to create Kafka producer")?;
 

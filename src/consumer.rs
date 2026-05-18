@@ -56,6 +56,10 @@ fn create_consumer(brokers: &str) -> Result<StreamConsumer> {
         .set("group.id", GROUP_ID)
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
+        .set("reconnect.backoff.ms", "500")
+        .set("reconnect.backoff.max.ms", "10000")
+        .set("retry.backoff.ms", "500")
+        .set("socket.keepalive.enable", "true")
         .create()
         .context("Failed to create Kafka consumer")?;
 
@@ -107,6 +111,17 @@ async fn dispatch_media_event(
     progress: &ProgressMap,
 ) {
     match event {
+        MediaEvent::StartUpload {
+            file_id,
+            author_id,
+            filename,
+            started_at: _,
+        } => {
+            info!(
+                "Received media.start_upload: file_id={}, author_id={}, filename={}",
+                file_id, author_id, filename
+            );
+        }
         MediaEvent::Uploaded {
             file_id,
             author_id,
@@ -130,6 +145,17 @@ async fn dispatch_media_event(
                 progress,
             )
             .await;
+        }
+        MediaEvent::Error {
+            file_id,
+            stage,
+            error_message,
+            timestamp: _,
+        } => {
+            warn!(
+                "Received media.error from upstream: file_id={}, stage={}, error={}",
+                file_id, stage, error_message
+            );
         }
         MediaEvent::Deleted {
             file_id,

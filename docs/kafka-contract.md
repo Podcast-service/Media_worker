@@ -9,6 +9,18 @@
 
 ## Topic `media`
 
+### `start_upload`
+
+```json
+{
+  "event": "start_upload",
+  "file_id": "11111111-1111-1111-1111-111111111111",
+  "author_id": "demo",
+  "filename": "test.mp3",
+  "started_at": "2026-04-07T12:00:00Z"
+}
+```
+
 ### `uploaded`
 
 ```json
@@ -20,6 +32,18 @@
   "original_format": "mp3",
   "temp_path": "/media_tmp/test.mp3",
   "uploaded_at": "2026-04-07T12:00:00Z"
+}
+```
+
+### `error`
+
+```json
+{
+  "event": "error",
+  "file_id": "11111111-1111-1111-1111-111111111111",
+  "stage": "validation",
+  "error_message": "Unsupported media type",
+  "timestamp": "2026-04-07T12:00:10Z"
 }
 ```
 
@@ -75,4 +99,3 @@
 
 - Все timestamp-поля сериализуются как RFC 3339 UTC.
 - Для топика `media` поле `temp_path` должно указывать на локальный путь, доступный контейнеру `media_worker`.
-

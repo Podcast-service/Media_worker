@@ -1,9 +1,20 @@
-target/
-tmp/media/*
-!tmp/media/.gitkeep
+# Rust build artifacts
+/target/
 
 # Rust/Cargo temporary files
 **/*.rs.bk
 
-# macOS
+# Local runtime files
+/tmp/media/*
+!/tmp/media/.gitkeep
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# macOS / editor noise
 .DS_Store
+.idea/
+.vscode/

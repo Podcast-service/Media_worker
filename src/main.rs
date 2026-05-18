@@ -7,7 +7,7 @@ mod pipeline;
 mod progress;
 mod storage;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use api_doc::ApiDoc;
 use axum::{routing::get, Router};
@@ -44,15 +44,23 @@ async fn main() {
     let consumer_kafka = kafka_producer.clone();
     let consumer_progress = progress_map.clone();
     tokio::spawn(async move {
-        if let Err(e) = consumer::run_media_consumer(
-            &consumer_brokers,
-            consumer_storage,
-            consumer_kafka,
-            consumer_progress,
-        )
-        .await
-        {
-            error!("Kafka consumer crashed: {}", e);
+        loop {
+            if let Err(e) = consumer::run_media_consumer(
+                &consumer_brokers,
+                consumer_storage.clone(),
+                consumer_kafka.clone(),
+                consumer_progress.clone(),
+            )
+            .await
+            {
+                error!("Kafka consumer crashed: {}", e);
+            } else {
+                error!("Kafka consumer stopped unexpectedly");
+            }
+
+            let delay = consumer_restart_delay();
+            info!("Restarting Kafka consumer in {} seconds", delay.as_secs());
+            tokio::time::sleep(delay).await;
         }
     });
 
@@ -81,4 +89,13 @@ async fn main() {
     info!("Swagger UI: http://localhost:{}/swagger-ui/", port);
 
     axum::serve(listener, app).await.expect("Server error");
+}
+
+fn consumer_restart_delay() -> Duration {
+    std::env::var("KAFKA_CONSUMER_RESTART_DELAY_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(5))
 }
