@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    kafka::{MediaEvent, SharedKafkaProducer},
+    kafka::{MediaEvent, MediaObjectType, SharedKafkaProducer},
     pipeline,
     progress::ProgressMap,
     storage::StorageBackend,
@@ -19,7 +19,7 @@ use crate::{
 
 const TOPIC: &str = "media";
 const GROUP_ID: &str = "media-worker-service";
-const HLS_BUCKET: &str = "audio-hls";
+const DEFAULT_HLS_BUCKET: &str = "4c5face5-544c-4bc2-a2e0-57a24d243af3";
 
 pub async fn run_media_consumer(
     brokers: &str,
@@ -112,65 +112,66 @@ async fn dispatch_media_event(
 ) {
     match event {
         MediaEvent::StartUpload {
-            file_id,
-            author_id,
-            filename,
+            media_type,
+            object_id,
             started_at: _,
         } => {
             info!(
-                "Received media.start_upload: file_id={}, author_id={}, filename={}",
-                file_id, author_id, filename
+                "Received media.start_upload: type={}, object_id={}",
+                media_type.as_str(),
+                object_id
             );
         }
         MediaEvent::Uploaded {
-            file_id,
-            author_id,
-            size_bytes,
-            original_format,
-            temp_path,
+            media_type,
+            object_id,
+            url,
+            size,
+            content_type,
             uploaded_at: _,
         } => {
-            if !validate_uploaded_temp_path(&file_id, &temp_path) {
+            if media_type != MediaObjectType::PodcastFile {
+                info!(
+                    "Ignoring media.uploaded for type={} object_id={}",
+                    media_type.as_str(),
+                    object_id
+                );
                 return;
             }
 
-            handle_uploaded(
-                file_id,
-                author_id,
-                size_bytes,
-                original_format,
-                temp_path,
-                storage,
-                kafka,
-                progress,
-            )
-            .await;
+            if !validate_uploaded_url(&object_id, &url) {
+                return;
+            }
+
+            handle_uploaded(object_id, size, content_type, url, storage, kafka, progress).await;
         }
         MediaEvent::Error {
-            file_id,
-            stage,
+            media_type,
+            object_id,
             error_message,
             timestamp: _,
         } => {
             warn!(
-                "Received media.error from upstream: file_id={}, stage={}, error={}",
-                file_id, stage, error_message
+                "Received media.error from upstream: type={}, object_id={}, error={}",
+                media_type.as_str(),
+                object_id,
+                error_message
             );
         }
         MediaEvent::Deleted {
-            file_id,
+            object_id,
             deleted_at: _,
         } => {
-            handle_deleted(file_id, storage, kafka).await;
+            handle_deleted(object_id, storage, kafka).await;
         }
     }
 }
 
-fn validate_uploaded_temp_path(file_id: &str, temp_path: &str) -> bool {
-    if temp_path.is_empty() {
+fn validate_uploaded_url(object_id: &str, url: &str) -> bool {
+    if url.is_empty() {
         warn!(
-            "Received media.uploaded with empty temp_path for file_id={}",
-            file_id
+            "Received media.uploaded with empty url for object_id={}",
+            object_id
         );
         return false;
     }
@@ -179,26 +180,27 @@ fn validate_uploaded_temp_path(file_id: &str, temp_path: &str) -> bool {
 }
 
 async fn handle_uploaded(
-    file_id_raw: String,
-    author_id: String,
-    size_bytes: usize,
-    original_format: String,
-    temp_path: String,
+    object_id: String,
+    size: usize,
+    content_type: String,
+    url: String,
     storage: &Arc<dyn StorageBackend>,
     kafka: &SharedKafkaProducer,
     progress: &ProgressMap,
 ) {
-    let file_id = match Uuid::parse_str(&file_id_raw) {
+    let file_id = match Uuid::parse_str(&object_id) {
         Ok(id) => id,
         Err(e) => {
-            warn!("Invalid file_id in media.uploaded event: {}", e);
+            warn!("Invalid object_id in media.uploaded event: {}", e);
             return;
         }
     };
+    let podcast_id = object_id.clone();
+    let need_subtitle = true;
 
     info!(
-        "Received media.uploaded: file_id={}, author_id={}, size={}, format={}, path={}",
-        file_id_raw, author_id, size_bytes, original_format, temp_path
+        "Received media.uploaded podcast_file: object_id={}, need_subtitle={}, size={}, content_type={}, url={}",
+        object_id, need_subtitle, size, content_type, url
     );
 
     let storage = storage.clone();
@@ -206,7 +208,17 @@ async fn handle_uploaded(
     let progress = progress.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = pipeline::run_pipeline(file_id, &temp_path, storage, kafka, progress).await
+        if let Err(e) = pipeline::run_pipeline(
+            file_id,
+            podcast_id,
+            need_subtitle,
+            url,
+            content_type,
+            storage,
+            kafka,
+            progress,
+        )
+        .await
         {
             error!("Pipeline task failed for file_id={}: {}", file_id, e);
         }
@@ -230,11 +242,13 @@ async fn handle_deleted(
 
     let prefix = format!("media/{}/", file_id);
 
-    match storage.delete_by_prefix(HLS_BUCKET, &prefix).await {
+    let hls_bucket = hls_bucket();
+
+    match storage.delete_by_prefix(&hls_bucket, &prefix).await {
         Ok(count) => {
             info!(
                 "Deleted {} objects for file_id={} from {}",
-                count, file_id, HLS_BUCKET
+                count, file_id, hls_bucket
             );
             if let Err(e) = kafka.send_deleted(file_id, count).await {
                 warn!("Failed to publish media.worker.deleted: {}", e);
@@ -250,4 +264,12 @@ async fn handle_deleted(
             }
         }
     }
+}
+
+fn hls_bucket() -> String {
+    std::env::var("HLS_BUCKET")
+        .ok()
+        .or_else(|| std::env::var("S3_BUCKET").ok())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_HLS_BUCKET.to_string())
 }

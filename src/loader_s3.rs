@@ -7,13 +7,11 @@ use aws_sdk_s3::{error::ProvideErrorMetadata, primitives::ByteStream, Client};
 use tokio::fs;
 use tracing::{error, info, warn};
 
-const RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV: &str = "RUSTFS_UPLOAD_BUFFER_SIZE_BYTES";
-const DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES: usize = 64 * 1024;
-const MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES: usize = 4 * 1024;
-const DEFAULT_RUSTFS_REGION: &str = "us-east-1";
-const DEFAULT_RUSTFS_ACCESS_KEY_ID: &str = "rustfsadmin";
-const DEFAULT_RUSTFS_SECRET_ACCESS_KEY: &str = "rustfsadmin";
-const DEFAULT_RUSTFS_ENDPOINT_URL: &str = "http://rustfs:9000";
+const S3_UPLOAD_BUFFER_SIZE_BYTES_ENV: &str = "S3_UPLOAD_BUFFER_SIZE_BYTES";
+const DEFAULT_S3_UPLOAD_BUFFER_SIZE_BYTES: usize = 64 * 1024;
+const MIN_S3_UPLOAD_BUFFER_SIZE_BYTES: usize = 4 * 1024;
+const DEFAULT_S3_REGION: &str = "ru-1";
+const DEFAULT_S3_ENDPOINT_URL: &str = "https://s3.twcstorage.ru";
 
 pub struct Config {
     pub region: String,
@@ -25,27 +23,48 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            region: env::var("RUSTFS_REGION").unwrap_or_else(|_| DEFAULT_RUSTFS_REGION.to_string()),
-            access_key_id: env::var("RUSTFS_ACCESS_KEY_ID")
-                .unwrap_or_else(|_| DEFAULT_RUSTFS_ACCESS_KEY_ID.to_string()),
-            secret_access_key: env::var("RUSTFS_SECRET_ACCESS_KEY")
-                .unwrap_or_else(|_| DEFAULT_RUSTFS_SECRET_ACCESS_KEY.to_string()),
-            endpoint_url: env::var("RUSTFS_ENDPOINT_URL")
-                .unwrap_or_else(|_| DEFAULT_RUSTFS_ENDPOINT_URL.to_string()),
+            region: env_value("S3_REGION").unwrap_or_else(|| DEFAULT_S3_REGION.to_string()),
+            access_key_id: env_value("S3_ACCESS_KEY_ID").context("S3_ACCESS_KEY_ID is required")?,
+            secret_access_key: env_value("S3_SECRET_ACCESS_KEY")
+                .context("S3_SECRET_ACCESS_KEY is required")?,
+            endpoint_url: env_value("S3_ENDPOINT_URL")
+                .unwrap_or_else(|| DEFAULT_S3_ENDPOINT_URL.to_string()),
         })
     }
 }
 
-pub struct RustFsClient {
+pub struct S3Client {
     client: Client,
 }
 
-impl RustFsClient {
+impl S3Client {
     pub fn new(client: Client) -> Self {
         Self { client }
     }
 
     pub async fn new_bucket(&self, bucket: &str) -> Result<()> {
+        match self.client.head_bucket().bucket(bucket).send().await {
+            Ok(_) => {
+                info!("Bucket '{}' is available", bucket);
+                return Ok(());
+            }
+            Err(err) if !should_create_bucket() => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "bucket '{bucket}' is not available; check S3_BUCKET and credentials, or set S3_CREATE_BUCKET=true for local S3-compatible storage"
+                    )
+                });
+            }
+            Err(err) => {
+                warn!(
+                    "Bucket '{}' is not available, trying to create it: code={:?}, message={:?}",
+                    bucket,
+                    err.code(),
+                    err.message()
+                );
+            }
+        }
+
         match self.client.create_bucket().bucket(bucket).send().await {
             Ok(_) => info!("Bucket '{}' created successfully", bucket),
             Err(err) if err.code() == Some("BucketAlreadyOwnedByYou") => {
@@ -118,6 +137,53 @@ impl RustFsClient {
         Ok(())
     }
 
+    pub async fn download_file(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        local_path: &Path,
+    ) -> Result<()> {
+        let response = self
+            .client
+            .get_object()
+            .bucket(bucket_name)
+            .key(object_key)
+            .send()
+            .await
+            .with_context(|| {
+                format!("error downloading '{object_key}' from bucket '{bucket_name}'")
+            })?;
+
+        let bytes = response
+            .body
+            .collect()
+            .await
+            .with_context(|| {
+                format!("error reading object body '{object_key}' from bucket '{bucket_name}'")
+            })?
+            .into_bytes();
+
+        if let Some(parent) = local_path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+
+        fs::write(local_path, &bytes)
+            .await
+            .with_context(|| format!("failed to write {}", local_path.display()))?;
+
+        info!(
+            "downloaded: bucket='{}', object='{}', path='{}', bytes={}",
+            bucket_name,
+            object_key,
+            local_path.display(),
+            bytes.len()
+        );
+
+        Ok(())
+    }
+
     pub async fn delete_by_prefix(&self, bucket: &str, prefix: &str) -> Result<u32> {
         let mut deleted = 0;
         let mut continuation_token: Option<String> = None;
@@ -155,13 +221,13 @@ impl RustFsClient {
     }
 }
 
-pub async fn create_client(cfg: &Config) -> Result<RustFsClient> {
+pub async fn create_client(cfg: &Config) -> Result<S3Client> {
     let credentials = Credentials::new(
         cfg.access_key_id.clone(),
         cfg.secret_access_key.clone(),
         None,
         None,
-        "rustfs",
+        "s3-compatible",
     );
 
     let shared_config = aws_config::defaults(BehaviorVersion::latest())
@@ -175,33 +241,43 @@ pub async fn create_client(cfg: &Config) -> Result<RustFsClient> {
         .force_path_style(true)
         .build();
 
-    Ok(RustFsClient::new(Client::from_conf(s3_config)))
+    Ok(S3Client::new(Client::from_conf(s3_config)))
 }
 
 fn load_upload_buffer_size_bytes() -> usize {
-    match env::var(RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV) {
+    match env::var(S3_UPLOAD_BUFFER_SIZE_BYTES_ENV) {
         Ok(value) => match value.parse::<usize>() {
-            Ok(size) if size < MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES => {
+            Ok(size) if size < MIN_S3_UPLOAD_BUFFER_SIZE_BYTES => {
                 warn!(
                     "{}={} is too small, using minimum {}",
-                    RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV, size, MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+                    S3_UPLOAD_BUFFER_SIZE_BYTES_ENV, size, MIN_S3_UPLOAD_BUFFER_SIZE_BYTES
                 );
-                MIN_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+                MIN_S3_UPLOAD_BUFFER_SIZE_BYTES
             }
             Ok(size) => size,
             Err(e) => {
                 warn!(
                     "Failed to parse {}='{}': {}, using default {}",
-                    RUSTFS_UPLOAD_BUFFER_SIZE_BYTES_ENV,
-                    value,
-                    e,
-                    DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+                    S3_UPLOAD_BUFFER_SIZE_BYTES_ENV, value, e, DEFAULT_S3_UPLOAD_BUFFER_SIZE_BYTES
                 );
-                DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES
+                DEFAULT_S3_UPLOAD_BUFFER_SIZE_BYTES
             }
         },
-        Err(_) => DEFAULT_RUSTFS_UPLOAD_BUFFER_SIZE_BYTES,
+        Err(_) => DEFAULT_S3_UPLOAD_BUFFER_SIZE_BYTES,
     }
+}
+
+fn env_value(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn should_create_bucket() -> bool {
+    env::var("S3_CREATE_BUCKET")
+        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+        .unwrap_or(false)
 }
 
 use async_trait::async_trait;
@@ -209,13 +285,13 @@ use async_trait::async_trait;
 use crate::storage::StorageBackend;
 
 #[async_trait]
-impl StorageBackend for RustFsClient {
+impl StorageBackend for S3Client {
     fn name(&self) -> &str {
-        "rustfs"
+        "s3"
     }
 
     async fn ensure_bucket(&self, bucket: &str) -> Result<()> {
-        RustFsClient::new_bucket(self, bucket).await
+        S3Client::new_bucket(self, bucket).await
     }
 
     async fn upload_file(
@@ -224,14 +300,23 @@ impl StorageBackend for RustFsClient {
         bucket_name: &str,
         object_key: &str,
     ) -> Result<()> {
-        RustFsClient::upload_file(self, local_path, object_key, bucket_name).await
+        S3Client::upload_file(self, local_path, object_key, bucket_name).await
+    }
+
+    async fn download_file(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        local_path: &Path,
+    ) -> Result<()> {
+        S3Client::download_file(self, bucket_name, object_key, local_path).await
     }
 
     async fn delete_object(&self, bucket: &str, object_key: &str) -> Result<()> {
-        RustFsClient::delete_object(self, bucket, object_key).await
+        S3Client::delete_object(self, bucket, object_key).await
     }
 
     async fn delete_by_prefix(&self, bucket: &str, prefix: &str) -> Result<u32> {
-        RustFsClient::delete_by_prefix(self, bucket, prefix).await
+        S3Client::delete_by_prefix(self, bucket, prefix).await
     }
 }

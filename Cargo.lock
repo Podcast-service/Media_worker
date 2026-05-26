@@ -1657,6 +1657,7 @@ dependencies = [
  "dashmap",
  "futures-core",
  "rdkafka",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
