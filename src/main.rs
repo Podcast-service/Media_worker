@@ -2,8 +2,9 @@ mod api_doc;
 mod consumer;
 mod hls;
 mod kafka;
-mod loader_rustfs;
+mod loader_s3;
 mod pipeline;
+mod podcast_api;
 mod progress;
 mod storage;
 
@@ -20,10 +21,10 @@ use utoipa_swagger_ui::SwaggerUi;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let cfg = loader_rustfs::Config::from_env().expect("RustFS config: set RUSTFS_* env variables");
-    let client = loader_rustfs::create_client(&cfg)
+    let cfg = loader_s3::Config::from_env().expect("S3 config: set S3_* env variables");
+    let client = loader_s3::create_client(&cfg)
         .await
-        .expect("Failed to create RustFS client");
+        .expect("Failed to create S3 client");
     let storage: Arc<dyn storage::StorageBackend> = Arc::new(client);
 
     let kafka_brokers =

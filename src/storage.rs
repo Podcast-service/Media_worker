@@ -19,6 +19,13 @@ pub trait StorageBackend: Send + Sync {
         object_key: &str,
     ) -> Result<()>;
 
+    async fn download_file(
+        &self,
+        bucket_name: &str,
+        object_key: &str,
+        local_path: &Path,
+    ) -> Result<()>;
+
     async fn upload_hls_output(&self, hls: &HlsOutput, bucket: &str, prefix: &str) -> Result<()> {
         let files = hls.list_files_relative().await?;
 

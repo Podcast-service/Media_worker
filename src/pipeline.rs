@@ -12,11 +12,12 @@ use uuid::Uuid;
 use crate::{
     hls,
     kafka::SharedKafkaProducer,
+    podcast_api,
     progress::{ProgressMap, WorkerProgress, WorkerStage},
     storage::StorageBackend,
 };
 
-const HLS_BUCKET: &str = "audio-hls";
+const DEFAULT_HLS_BUCKET: &str = "4c5face5-544c-4bc2-a2e0-57a24d243af3";
 const MAX_RETRIES_ENV: &str = "PIPELINE_MAX_RETRIES";
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const LOUDNORM_TARGET_I: &str = "-16";
@@ -32,13 +33,18 @@ const OVERWRITE_OUTPUT_FLAG: &str = "-y";
 
 pub struct PipelineResult {
     pub hls_path: String,
+    pub hls_bucket: String,
+    pub subtitle_source_object_key: Option<String>,
     pub duration: f64,
     pub bitrates: Vec<u32>,
 }
 
 pub async fn run_pipeline(
     file_id: Uuid,
-    temp_path: &str,
+    podcast_id: String,
+    need_subtitle: bool,
+    audio_url_file: String,
+    original_format: String,
     storage: Arc<dyn StorageBackend>,
     kafka: SharedKafkaProducer,
     progress: ProgressMap,
@@ -46,17 +52,109 @@ pub async fn run_pipeline(
     let max_retries = load_max_retries();
     mark_pipeline_queued(file_id, &progress);
 
-    match execute_pipeline_with_retries(file_id, temp_path, &storage, &progress, max_retries).await
+    let source = SourceAudio::parse(audio_url_file, original_format)?;
+    let temp_path = download_source_audio(file_id, &source, &storage).await?;
+
+    match execute_pipeline_with_retries(
+        file_id,
+        temp_path.as_path(),
+        &storage,
+        &progress,
+        max_retries,
+    )
+    .await
     {
         Ok(result) => {
-            finalize_successful_pipeline(file_id, &result, &kafka, &progress, temp_path).await;
+            finalize_successful_pipeline(
+                file_id,
+                &podcast_id,
+                need_subtitle,
+                &result,
+                &kafka,
+                &progress,
+                temp_path.as_path(),
+            )
+            .await;
             Ok(())
         }
         Err(err) => {
-            finalize_failed_pipeline(file_id, &err, &kafka, &progress, temp_path).await;
+            finalize_failed_pipeline(file_id, &err, &kafka, &progress, temp_path.as_path()).await;
             Err(err)
         }
     }
+}
+
+struct SourceAudio {
+    bucket: String,
+    object_key: String,
+    extension: String,
+}
+
+impl SourceAudio {
+    fn parse(audio_url_file: String, original_format: String) -> Result<Self> {
+        let (bucket, object_key) = parse_s3_url(&audio_url_file)?;
+        let extension = Path::new(&object_key)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_string())
+            .or_else(|| extension_from_mime(&original_format).map(|value| value.to_string()))
+            .unwrap_or_else(|| "bin".to_string());
+
+        Ok(Self {
+            bucket,
+            object_key,
+            extension,
+        })
+    }
+}
+
+fn parse_s3_url(audio_url_file: &str) -> Result<(String, String)> {
+    let Some(rest) = audio_url_file.strip_prefix("s3://") else {
+        bail!("audio_url_file must start with s3://, got '{audio_url_file}'");
+    };
+
+    let Some((bucket, object_key)) = rest.split_once('/') else {
+        bail!("audio_url_file must include bucket and object key: '{audio_url_file}'");
+    };
+
+    if bucket.trim().is_empty() || object_key.trim().is_empty() {
+        bail!("audio_url_file must include non-empty bucket and object key: '{audio_url_file}'");
+    }
+
+    Ok((bucket.to_string(), object_key.to_string()))
+}
+
+fn extension_from_mime(mime: &str) -> Option<&'static str> {
+    match mime {
+        "audio/mpeg" => Some("mp3"),
+        "audio/wav" => Some("wav"),
+        "audio/ogg" => Some("ogg"),
+        "audio/flac" => Some("flac"),
+        "audio/mp4" => Some("m4a"),
+        _ => None,
+    }
+}
+
+async fn download_source_audio(
+    file_id: Uuid,
+    source: &SourceAudio,
+    storage: &Arc<dyn StorageBackend>,
+) -> Result<PathBuf> {
+    let path = std::env::temp_dir()
+        .join("media_worker_sources")
+        .join(format!("{}.{}", file_id, source.extension));
+
+    storage
+        .download_file(&source.bucket, &source.object_key, &path)
+        .await
+        .with_context(|| {
+            format!(
+                "download source audio from s3://{}/{}",
+                source.bucket, source.object_key
+            )
+        })?;
+
+    Ok(path)
 }
 
 fn load_max_retries() -> u32 {
@@ -85,7 +183,7 @@ fn load_max_retries() -> u32 {
 /// Внутренняя реализация pipeline (один прогон)
 async fn execute_pipeline(
     file_id: Uuid,
-    temp_path: &str,
+    temp_path: &Path,
     storage: &Arc<dyn StorageBackend>,
     progress: &ProgressMap,
 ) -> Result<PipelineResult> {
@@ -230,7 +328,7 @@ fn build_measure_loudnorm_filter() -> String {
 
 async fn execute_pipeline_with_retries(
     file_id: Uuid,
-    temp_path: &str,
+    temp_path: &Path,
     storage: &Arc<dyn StorageBackend>,
     progress: &ProgressMap,
     max_retries: u32,
@@ -256,12 +354,11 @@ async fn execute_pipeline_with_retries(
     Err(last_error)
 }
 
-async fn ensure_source_file_exists(temp_path: &str) -> Result<PathBuf> {
-    let input = PathBuf::from(temp_path);
-    if fs::metadata(&input).await.is_err() {
-        bail!("Temporary file not found: {}", temp_path);
+async fn ensure_source_file_exists(temp_path: &Path) -> Result<PathBuf> {
+    if fs::metadata(temp_path).await.is_err() {
+        bail!("Source file not found: {}", temp_path.display());
     }
-    Ok(input)
+    Ok(temp_path.to_path_buf())
 }
 
 async fn run_normalization_stage(
@@ -312,8 +409,9 @@ async fn upload_hls_stage(
     );
 
     let upload_prefix = format!("media/{}", file_id);
+    let hls_bucket = hls_bucket();
 
-    let upload_result = perform_hls_upload(storage, &hls_output, &upload_prefix).await;
+    let upload_result = perform_hls_upload(storage, &hls_output, &hls_bucket, &upload_prefix).await;
     if let Err(err) = upload_result {
         hls_output.cleanup().await;
         return Err(err);
@@ -321,6 +419,8 @@ async fn upload_hls_stage(
 
     let result = PipelineResult {
         hls_path: format!("/media/{}/{}", file_id, hls_output.playlist_name),
+        hls_bucket: hls_bucket.clone(),
+        subtitle_source_object_key: select_subtitle_source_object_key(file_id, &hls_output).await?,
         duration: hls_output.duration_secs.unwrap_or(0.0),
         bitrates: hls_output.bitrates.clone(),
     };
@@ -334,16 +434,64 @@ async fn upload_hls_stage(
 async fn perform_hls_upload(
     storage: &Arc<dyn StorageBackend>,
     hls_output: &hls::HlsOutput,
+    hls_bucket: &str,
     upload_prefix: &str,
 ) -> Result<()> {
     storage
-        .ensure_bucket(HLS_BUCKET)
+        .ensure_bucket(hls_bucket)
         .await
         .context("Failed to create bucket")?;
     storage
-        .upload_hls_output(&hls_output, HLS_BUCKET, &upload_prefix)
+        .upload_hls_output(&hls_output, hls_bucket, &upload_prefix)
         .await
         .context("Error uploading to storage")
+}
+
+fn hls_bucket() -> String {
+    std::env::var("HLS_BUCKET")
+        .ok()
+        .or_else(|| std::env::var("S3_BUCKET").ok())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_HLS_BUCKET.to_string())
+}
+
+async fn select_subtitle_source_object_key(
+    file_id: Uuid,
+    hls_output: &hls::HlsOutput,
+) -> Result<Option<String>> {
+    let files = hls_output
+        .list_files_relative()
+        .await
+        .context("Failed to list HLS files for subtitle source selection")?;
+
+    let mut segment_keys = files
+        .into_iter()
+        .map(|(_, rel_key)| rel_key)
+        .filter(|rel_key| rel_key.ends_with(".m4s") && !rel_key.ends_with("init.mp4"))
+        .collect::<Vec<_>>();
+
+    segment_keys.sort();
+
+    if segment_keys.is_empty() {
+        return Ok(None);
+    }
+
+    let preferred_prefix = hls_output
+        .bitrates
+        .iter()
+        .max()
+        .map(|bitrate| format!("{}k/", bitrate));
+
+    let selected_key = preferred_prefix
+        .and_then(|prefix| {
+            segment_keys
+                .iter()
+                .find(|key| key.starts_with(&prefix))
+                .cloned()
+        })
+        .unwrap_or_else(|| segment_keys[0].clone());
+
+    Ok(Some(format!("media/{}/{}", file_id, selected_key)))
 }
 
 fn mark_pipeline_queued(file_id: Uuid, progress: &ProgressMap) {
@@ -359,14 +507,17 @@ fn mark_pipeline_queued(file_id: Uuid, progress: &ProgressMap) {
 
 async fn finalize_successful_pipeline(
     file_id: Uuid,
+    podcast_id: &str,
+    need_subtitle: bool,
     result: &PipelineResult,
     kafka: &SharedKafkaProducer,
     progress: &ProgressMap,
-    temp_path: &str,
+    temp_path: &Path,
 ) {
     if let Err(e) = kafka
         .send_converted(
             file_id,
+            podcast_id,
             &result.hls_path,
             result.duration,
             result.bitrates.clone(),
@@ -374,6 +525,15 @@ async fn finalize_successful_pipeline(
         .await
     {
         warn!("Failed to publish media.worker.converted: {}", e);
+    }
+
+    if need_subtitle {
+        request_subtitles(file_id, podcast_id, result, kafka).await;
+    } else {
+        info!(
+            "Skipping subtitle request for file_id={} because need_subtitle=false",
+            file_id
+        );
     }
 
     progress.insert(
@@ -385,7 +545,64 @@ async fn finalize_successful_pipeline(
         },
     );
 
-    cleanup_temp(temp_path).await;
+    cleanup_temp_path(temp_path).await;
+}
+
+async fn request_subtitles(
+    file_id: Uuid,
+    podcast_id: &str,
+    result: &PipelineResult,
+    kafka: &SharedKafkaProducer,
+) {
+    let Some(source_object_key) = result.subtitle_source_object_key.as_deref() else {
+        let msg = "No HLS media segment found for subtitle request";
+        warn!("{} (file_id={})", msg, file_id);
+        if let Err(e) = kafka
+            .send_worker_error(file_id, "subtitle_request", msg)
+            .await
+        {
+            warn!("Failed to publish media.worker.error: {}", e);
+        }
+        return;
+    };
+
+    let language = subtitle_language();
+    let num_speakers = match podcast_api::fetch_speaker_count(podcast_id).await {
+        Ok(value) => value,
+        Err(e) => {
+            warn!(
+                "Failed to fetch speaker count for podcast_id={}: {}",
+                podcast_id, e
+            );
+            None
+        }
+    };
+
+    if let Err(e) = kafka
+        .send_subtitle_requested(
+            file_id,
+            &result.hls_bucket,
+            source_object_key,
+            &language,
+            num_speakers,
+        )
+        .await
+    {
+        warn!("Failed to publish media.subtitle.requested: {}", e);
+        if let Err(err) = kafka
+            .send_worker_error(file_id, "subtitle_request", &e.to_string())
+            .await
+        {
+            warn!("Failed to publish media.worker.error: {}", err);
+        }
+    }
+}
+
+fn subtitle_language() -> String {
+    std::env::var("SUBTITLE_LANGUAGE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "ru".to_string())
 }
 
 async fn finalize_failed_pipeline(
@@ -393,7 +610,7 @@ async fn finalize_failed_pipeline(
     err: &anyhow::Error,
     kafka: &SharedKafkaProducer,
     progress: &ProgressMap,
-    temp_path: &str,
+    temp_path: &Path,
 ) {
     let error_message = format!("{err:#}");
     error!(
@@ -417,7 +634,7 @@ async fn finalize_failed_pipeline(
         },
     );
 
-    cleanup_temp(temp_path).await;
+    cleanup_temp_path(temp_path).await;
 }
 
 fn log_pipeline_attempt_start(attempt: u32, max_retries: u32, file_id: Uuid) {
