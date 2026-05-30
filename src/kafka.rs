@@ -88,6 +88,53 @@ pub enum MediaWorkerEvent {
     },
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct BackendMediaWorkerEvent {
+    object_type: &'static str,
+    object_id: String,
+    event: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    timestamp: DateTime<Utc>,
+}
+
+impl BackendMediaWorkerEvent {
+    fn start_processing(file_id: Uuid) -> Self {
+        Self {
+            object_type: "podcast_file_url",
+            object_id: file_id.to_string(),
+            event: "start_processing",
+            audio_url: None,
+            error: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn processed(podcast_id: &str, audio_url: &str) -> Self {
+        Self {
+            object_type: "podcast_file_url",
+            object_id: podcast_id.to_string(),
+            event: "processed",
+            audio_url: Some(audio_url.to_string()),
+            error: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn processing_failed(file_id: Uuid, error: &str) -> Self {
+        Self {
+            object_type: "podcast_file_url",
+            object_id: file_id.to_string(),
+            event: "processing_failed",
+            audio_url: None,
+            error: Some(error.to_string()),
+            timestamp: Utc::now(),
+        }
+    }
+}
+
 const TOPIC_MEDIA_WORKER: &str = "media.worker";
 const TOPIC_SUBTITLE: &str = "media.subtitle";
 
@@ -122,6 +169,26 @@ impl KafkaProducer {
         Ok(Self { producer })
     }
 
+    /// Публикует backend-событие начала обработки подкаста.
+    pub async fn send_processing_started(&self, file_id: Uuid) -> Result<()> {
+        let event = BackendMediaWorkerEvent::start_processing(file_id);
+
+        self.send_json_to_topic(
+            TOPIC_MEDIA_WORKER,
+            &file_id.to_string(),
+            &event,
+            "backend media.worker.start_processing",
+        )
+        .await?;
+
+        info!(
+            "Published backend media.worker.start_processing (file_id={})",
+            file_id,
+        );
+
+        Ok(())
+    }
+
     /// Публикует media.worker.converted
     pub async fn send_converted(
         &self,
@@ -140,22 +207,50 @@ impl KafkaProducer {
             bitrates,
             converted_at: Utc::now(),
         };
+        let backend_event = BackendMediaWorkerEvent::processed(podcast_id, hls_path);
 
-        let payload = serde_json::to_string(&event)?;
-        let record = FutureRecord::to(TOPIC_MEDIA_WORKER)
-            .key(&file_id_key)
-            .payload(&payload);
-
-        self.producer
-            .send(record, Duration::from_secs(30))
-            .await
-            .map_err(|(err, _msg)| {
-                anyhow::anyhow!("Failed to send media.worker.converted: {}", err)
-            })?;
+        let converted_result = self
+            .send_json_to_topic(
+                TOPIC_MEDIA_WORKER,
+                &file_id_key,
+                &event,
+                "media.worker.converted",
+            )
+            .await;
+        let backend_result = self
+            .send_json_to_topic(
+                TOPIC_MEDIA_WORKER,
+                &file_id_key,
+                &backend_event,
+                "backend media.worker.processed",
+            )
+            .await;
+        converted_result?;
+        backend_result?;
 
         info!(
-            "Published media.worker.converted (file_id={}, podcast_id={}, path={})",
+            "Published media.worker.converted and backend media.worker.processed (file_id={}, podcast_id={}, path={})",
             file_id, podcast_id, hls_path,
+        );
+
+        Ok(())
+    }
+
+    /// Публикует backend-событие неуспешной обработки подкаста.
+    pub async fn send_processing_failed(&self, file_id: Uuid, error: &str) -> Result<()> {
+        let event = BackendMediaWorkerEvent::processing_failed(file_id, error);
+
+        self.send_json_to_topic(
+            TOPIC_MEDIA_WORKER,
+            &file_id.to_string(),
+            &event,
+            "backend media.worker.processing_failed",
+        )
+        .await?;
+
+        info!(
+            "Published backend media.worker.processing_failed (file_id={})",
+            file_id,
         );
 
         Ok(())
@@ -268,6 +363,24 @@ impl KafkaProducer {
             .context("Failed to flush Kafka producer")?;
         Ok(())
     }
+
+    async fn send_json_to_topic<T: Serialize>(
+        &self,
+        topic: &str,
+        key: &str,
+        value: &T,
+        label: &str,
+    ) -> Result<()> {
+        let payload = serde_json::to_string(value)?;
+        let record = FutureRecord::to(topic).key(key).payload(&payload);
+
+        self.producer
+            .send(record, Duration::from_secs(30))
+            .await
+            .map_err(|(err, _msg)| anyhow::anyhow!("Failed to send {label}: {err}"))?;
+
+        Ok(())
+    }
 }
 
 pub type SharedKafkaProducer = Arc<KafkaProducer>;
@@ -275,4 +388,25 @@ pub type SharedKafkaProducer = Arc<KafkaProducer>;
 pub fn new_producer(brokers: &str) -> Result<SharedKafkaProducer> {
     let producer = KafkaProducer::new(brokers)?;
     Ok(Arc::new(producer))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_processed_event_uses_backend_contract() {
+        let event = BackendMediaWorkerEvent::processed(
+            "11111111-1111-4111-8111-111111111111",
+            "/media/11111111-1111-4111-8111-111111111111/master.m3u8",
+        );
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(value["object_type"], "podcast_file_url");
+        assert_eq!(value["event"], "processed");
+        assert_eq!(
+            value["audio_url"],
+            "/media/11111111-1111-4111-8111-111111111111/master.m3u8"
+        );
+    }
 }
