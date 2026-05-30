@@ -96,6 +96,46 @@
 }
 ```
 
+### Дополнительные backend-события
+
+В topic `media.worker` также публикуются сообщения для backend. Исходные сообщения
+`converted`, `error` и `deleted` сохраняются для существующих потребителей.
+
+Начало обработки:
+
+```json
+{
+  "object_type": "podcast_file_url",
+  "object_id": "11111111-1111-1111-1111-111111111111",
+  "event": "start_processing",
+  "timestamp": "2026-05-31T00:00:00Z"
+}
+```
+
+Успешная обработка:
+
+```json
+{
+  "object_type": "podcast_file_url",
+  "object_id": "11111111-1111-1111-1111-111111111111",
+  "event": "processed",
+  "audio_url": "/media/11111111-1111-1111-1111-111111111111/master.m3u8",
+  "timestamp": "2026-05-31T00:01:00Z"
+}
+```
+
+Ошибка обработки:
+
+```json
+{
+  "object_type": "podcast_file_url",
+  "object_id": "11111111-1111-1111-1111-111111111111",
+  "event": "processing_failed",
+  "error": "conversion failed",
+  "timestamp": "2026-05-31T00:01:00Z"
+}
+```
+
 ## Topic `media.subtitle`
 
 Worker публикует это сообщение после успешной HLS-конвертации для входящего `media.uploaded` с `type=podcast_file`.

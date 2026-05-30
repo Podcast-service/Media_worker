@@ -208,6 +208,13 @@ async fn handle_uploaded(
     let progress = progress.clone();
 
     tokio::spawn(async move {
+        if let Err(e) = kafka.send_processing_started(file_id).await {
+            warn!(
+                "Failed to publish backend media.worker.start_processing: {}",
+                e
+            );
+        }
+
         if let Err(e) = pipeline::run_pipeline(
             file_id,
             podcast_id,
@@ -215,12 +222,19 @@ async fn handle_uploaded(
             url,
             content_type,
             storage,
-            kafka,
+            kafka.clone(),
             progress,
         )
         .await
         {
             error!("Pipeline task failed for file_id={}: {}", file_id, e);
+            if let Err(publish_error) = kafka.send_processing_failed(file_id, &e.to_string()).await
+            {
+                warn!(
+                    "Failed to publish backend media.worker.processing_failed: {}",
+                    publish_error
+                );
+            }
         }
     });
 }
