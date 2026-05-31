@@ -58,6 +58,7 @@ HLS-объекты загружаются в S3 по префиксу:
 media/<file_id>/
 ```
 
+
 ## API
 
 - Swagger UI: `http://localhost:8082/swagger-ui/`
