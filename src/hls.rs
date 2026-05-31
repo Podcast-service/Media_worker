@@ -271,7 +271,7 @@ fn build_stream_info_tag(kbps: u32) -> String {
 }
 
 /// Получаем длительность исходного файла через ffprobe
-async fn get_duration(input_path: &Path) -> Option<f64> {
+pub(crate) async fn get_duration(input_path: &Path) -> Option<f64> {
     let output = Command::new("ffprobe")
         .args(FFPROBE_DURATION_ARGS)
         .arg(input_path)
