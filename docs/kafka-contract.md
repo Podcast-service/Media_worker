@@ -1,20 +1,24 @@
 # Kafka Contract
 
-Сообщения в Kafka передаются в JSON.
+`Media_worker` читает generic-события загрузки, конвертирует аудиофайлы в HLS
+и публикует backend-события, публичные события и запросы генерации субтитров.
+Сообщения передаются в JSON.
 
-Публичный поток (`event`-discriminator) и backend-поток для `podcast_core` разнесены
-по разным топикам, чтобы консьюмеры backend не падали на чужих схемах:
+| Направление | Topic | Kafka key | Назначение |
+| --- | --- | --- | --- |
+| Входящий | `media` | `object_id` | Generic-события загрузки и удаления |
+| Исходящий | `media.worker` | `file_id` | Backend-события для `podcast_core` |
+| Исходящий | `media.worker.events` | `file_id` | Публичные события worker-домена |
+| Исходящий | `media.subtitle.request` | `file_id` | Запросы генерации субтитров для `Speech_service` |
 
-- Топик `media`: generic-события от `media_api`; `media_worker` обрабатывает только `type=podcast_file` + `event=uploaded`
-- Топик `media.worker`: **только backend-события** для `podcast_core` (`start_processing` / `processed` / `processing_failed`)
-- Топик `media.worker.events`: публичный поток `media_worker` (`converted` / `error` / `deleted`) для внешних потребителей
-- Топик `media.subtitle.request`: запросы на генерацию субтитров (`media_worker` → `speech_service`)
-- Топик `media.subtitle`: **только backend-результат** субтитров для `podcast_core` (с `podcast_id` и `content`)
-- Топики `media.subtitle.ready` / `media.subtitle.error`: публичный поток субтитров `speech_service`
-
-Поле `event` используется как discriminator в публичных топиках и сериализуется в `snake_case`.
+Consumer group для `media`: `media-worker-service`.
 
 ## Topic `media`
+
+Worker принимает четыре типа событий. Для `uploaded` обрабатывается только
+`type=podcast_file`; события типов `avatar`, `podcast_cover` и `playlists`
+игнорируются. События `start_upload` и `error` логируются. Событие `deleted`
+удаляет HLS-объекты по префиксу `media/<object_id>/`.
 
 ### `start_upload`
 
@@ -37,9 +41,15 @@
   "url": "s3://4c5face5-544c-4bc2-a2e0-57a24d243af3/media/uploads/podcast_file/11111111-1111-1111-1111-111111111111/22222222-2222-4222-8222-222222222222.mp3",
   "size": 123456,
   "content_type": "audio/mpeg",
-  "uploaded_at": "2026-04-07T12:00:00Z"
+  "need_subtitle": true,
+  "uploaded_at": "2026-04-07T12:00:10Z"
 }
 ```
+
+`url` должен быть S3 locator в формате `s3://<bucket>/<object_key>`.
+`object_id` используется как `file_id` и как `podcast_id`, поэтому должен быть
+UUID. Для совместимости со старыми сообщениями отсутствие `need_subtitle`
+трактуется как `true`.
 
 ### `error`
 
@@ -63,7 +73,55 @@
 }
 ```
 
-## Topic `media.worker.events` (публичный поток)
+## Topic `media.worker`
+
+Backend-поток для `podcast_core`. В этот топик не публикуются публичные события
+`converted`, `error` и `deleted`.
+
+### `start_processing`
+
+```json
+{
+  "object_type": "podcast_file_url",
+  "object_id": "11111111-1111-1111-1111-111111111111",
+  "event": "start_processing",
+  "timestamp": "2026-04-07T12:00:11Z"
+}
+```
+
+### `processed`
+
+```json
+{
+  "object_type": "podcast_file_url",
+  "object_id": "11111111-1111-1111-1111-111111111111",
+  "event": "processed",
+  "audio_url": "/media/11111111-1111-1111-1111-111111111111/master.m3u8",
+  "duration_seconds": "2580",
+  "audio_file_size": "11232332",
+  "timestamp": "2026-04-07T12:01:30Z"
+}
+```
+
+`duration_seconds` содержит полную длительность исходного аудиофайла,
+округленную до целого числа секунд. `duration_seconds` и `audio_file_size`
+сериализуются как строки для совместимости с backend.
+
+### `processing_failed`
+
+```json
+{
+  "object_type": "podcast_file_url",
+  "object_id": "11111111-1111-1111-1111-111111111111",
+  "event": "processing_failed",
+  "error": "conversion failed",
+  "timestamp": "2026-04-07T12:01:30Z"
+}
+```
+
+## Topic `media.worker.events`
+
+Публичный поток worker-домена для внешних потребителей.
 
 ### `converted`
 
@@ -71,8 +129,8 @@
 {
   "event": "converted",
   "file_id": "11111111-1111-1111-1111-111111111111",
-  "podcast_id": "podcast_123",
-  "path": "/media/11111111-1111-1111-1111-111111111111/11111111-1111-1111-1111-111111111111.m3u8",
+  "podcast_id": "11111111-1111-1111-1111-111111111111",
+  "path": "/media/11111111-1111-1111-1111-111111111111/master.m3u8",
   "duration": 123.45,
   "bitrates": [64, 128, 256],
   "converted_at": "2026-04-07T12:01:30Z"
@@ -102,55 +160,11 @@
 }
 ```
 
-## Topic `media.worker` (backend-поток для `podcast_core`)
-
-В topic `media.worker` публикуются только backend-сообщения. Публичные `converted`,
-`error` и `deleted` вынесены в `media.worker.events` для существующих потребителей.
-
-Начало обработки:
-
-```json
-{
-  "object_type": "podcast_file_url",
-  "object_id": "11111111-1111-1111-1111-111111111111",
-  "event": "start_processing",
-  "timestamp": "2026-05-31T00:00:00Z"
-}
-```
-
-Успешная обработка:
-
-```json
-{
-  "object_type": "podcast_file_url",
-  "object_id": "11111111-1111-1111-1111-111111111111",
-  "event": "processed",
-  "audio_url": "/media/11111111-1111-1111-1111-111111111111/master.m3u8",
-  "duration_seconds": "2580",
-  "audio_file_size": "11232332",
-  "timestamp": "2026-05-31T00:01:00Z"
-}
-```
-
-`duration_seconds` содержит полную длительность исходного аудиофайла, **округлённую
-до целого числа секунд** (backend десериализует её как `Long`), а `audio_file_size` —
-размер исходного аудиофайла в байтах. Оба значения сериализуются как строки.
-
-Ошибка обработки:
-
-```json
-{
-  "object_type": "podcast_file_url",
-  "object_id": "11111111-1111-1111-1111-111111111111",
-  "event": "processing_failed",
-  "error": "conversion failed",
-  "timestamp": "2026-05-31T00:01:00Z"
-}
-```
-
 ## Topic `media.subtitle.request`
 
-Worker публикует это сообщение после успешной HLS-конвертации для входящего `media.uploaded` с `type=podcast_file`. Его потребляет `speech_service`.
+Worker публикует запрос после успешной HLS-конвертации, если входящее событие
+`media.uploaded` содержит `type=podcast_file` и `need_subtitle=true`. При
+`need_subtitle=false` сообщение не публикуется.
 
 ```json
 {
@@ -163,12 +177,12 @@ Worker публикует это сообщение после успешной 
 }
 ```
 
+`language` берется из `SUBTITLE_LANGUAGE`, по умолчанию `ru`. Перед публикацией
+worker запрашивает `GET {PODCAST_API_BASE_URL}/podcasts/{podcast_id}/speakers`.
+Если API недоступен или `PODCAST_API_BASE_URL` не задан, поле `num_speakers`
+не сериализуется.
+
 ## Notes
 
 - Все timestamp-поля сериализуются как RFC 3339 UTC.
-- Для `type=podcast_file` поле `object_id` используется как `file_id` и как `podcast_id`; значение должно быть UUID.
-- `media_worker` игнорирует `uploaded` события типов `avatar`, `podcast_cover` и `playlists`.
-- Генерация субтитров включена для всех обработанных `podcast_file` upload-событий.
-- Язык запроса субтитров берется из `SUBTITLE_LANGUAGE`, по умолчанию `ru`.
-- Число спикеров запрашивается публичным `GET {PODCAST_API_BASE_URL}/podcasts/{podcast_id}/speakers`; если API недоступен или `PODCAST_API_BASE_URL` не задан, `num_speakers` не отправляется.
-- Для топика `media` поле `url` должно быть S3 locator в формате `s3://<bucket>/<object_key>`.
+- В `media.worker` поля без значения не сериализуются.

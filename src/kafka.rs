@@ -11,6 +11,10 @@ use tracing::info;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+fn default_need_subtitle() -> bool {
+    true
+}
+
 /// Входящие события из media_api.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +52,8 @@ pub enum MediaEvent {
         url: String,
         size: usize,
         content_type: String,
+        #[serde(default = "default_need_subtitle")]
+        need_subtitle: bool,
         uploaded_at: DateTime<Utc>,
     },
     Error {
@@ -283,7 +289,7 @@ impl KafkaProducer {
         Ok(())
     }
 
-    /// Публикует запрос на генерацию субтитров в media.subtitle
+    /// Публикует запрос на генерацию субтитров в media.subtitle.request
     pub async fn send_subtitle_requested(
         &self,
         file_id: Uuid,
@@ -420,6 +426,51 @@ pub fn new_producer(brokers: &str) -> Result<SharedKafkaProducer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uploaded_event_deserializes_need_subtitle() {
+        let event: MediaEvent = serde_json::from_value(serde_json::json!({
+            "event": "uploaded",
+            "type": "podcast_file",
+            "object_id": "11111111-1111-4111-8111-111111111111",
+            "url": "s3://bucket/source.mp3",
+            "size": 123,
+            "content_type": "audio/mpeg",
+            "need_subtitle": false,
+            "uploaded_at": "2026-04-07T12:00:00Z"
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            event,
+            MediaEvent::Uploaded {
+                need_subtitle: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn uploaded_event_defaults_need_subtitle_to_true() {
+        let event: MediaEvent = serde_json::from_value(serde_json::json!({
+            "event": "uploaded",
+            "type": "podcast_file",
+            "object_id": "11111111-1111-4111-8111-111111111111",
+            "url": "s3://bucket/source.mp3",
+            "size": 123,
+            "content_type": "audio/mpeg",
+            "uploaded_at": "2026-04-07T12:00:00Z"
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            event,
+            MediaEvent::Uploaded {
+                need_subtitle: true,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn backend_processed_event_uses_backend_contract() {

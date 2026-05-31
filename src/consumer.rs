@@ -137,6 +137,7 @@ async fn dispatch_media_event(
             url,
             size,
             content_type,
+            need_subtitle,
             uploaded_at: _,
         } => {
             if media_type != MediaObjectType::PodcastFile {
@@ -152,7 +153,17 @@ async fn dispatch_media_event(
                 return;
             }
 
-            handle_uploaded(object_id, size, content_type, url, storage, kafka, progress).await;
+            handle_uploaded(
+                object_id,
+                size,
+                content_type,
+                need_subtitle,
+                url,
+                storage,
+                kafka,
+                progress,
+            )
+            .await;
         }
         MediaEvent::Error {
             media_type,
@@ -192,6 +203,7 @@ async fn handle_uploaded(
     object_id: String,
     size: usize,
     content_type: String,
+    need_subtitle: bool,
     url: String,
     storage: &Arc<dyn StorageBackend>,
     kafka: &SharedKafkaProducer,
@@ -205,7 +217,6 @@ async fn handle_uploaded(
         }
     };
     let podcast_id = object_id.clone();
-    let need_subtitle = true;
 
     info!(
         "Received media.uploaded podcast_file: object_id={}, need_subtitle={}, size={}, content_type={}, url={}",
