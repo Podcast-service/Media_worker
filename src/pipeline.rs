@@ -602,7 +602,7 @@ async fn request_subtitles(
         )
         .await
     {
-        warn!("Failed to publish media.subtitle.requested: {}", e);
+        warn!("Failed to publish media.subtitle.request: {}", e);
         if let Err(err) = kafka
             .send_worker_error(file_id, "subtitle_request", &e.to_string())
             .await

@@ -1,12 +1,18 @@
 # Kafka Contract
 
-Сообщения в Kafka передаются в JSON. Топики `media` и `media.worker` используют top-level поле `event`.
+Сообщения в Kafka передаются в JSON.
+
+Публичный поток (`event`-discriminator) и backend-поток для `podcast_core` разнесены
+по разным топикам, чтобы консьюмеры backend не падали на чужих схемах:
 
 - Топик `media`: generic-события от `media_api`; `media_worker` обрабатывает только `type=podcast_file` + `event=uploaded`
-- Топик `media.worker`: исходящие события, публикуемые `media_worker`
-- Топик `media.subtitle`: запросы на генерацию субтитров, публикуемые `media_worker` после обработки `type=podcast_file`
+- Топик `media.worker`: **только backend-события** для `podcast_core` (`start_processing` / `processed` / `processing_failed`)
+- Топик `media.worker.events`: публичный поток `media_worker` (`converted` / `error` / `deleted`) для внешних потребителей
+- Топик `media.subtitle.request`: запросы на генерацию субтитров (`media_worker` → `speech_service`)
+- Топик `media.subtitle`: **только backend-результат** субтитров для `podcast_core` (с `podcast_id` и `content`)
+- Топики `media.subtitle.ready` / `media.subtitle.error`: публичный поток субтитров `speech_service`
 
-Поле `event` используется как discriminator и сериализуется в `snake_case`.
+Поле `event` используется как discriminator в публичных топиках и сериализуется в `snake_case`.
 
 ## Topic `media`
 
@@ -57,7 +63,7 @@
 }
 ```
 
-## Topic `media.worker`
+## Topic `media.worker.events` (публичный поток)
 
 ### `converted`
 
@@ -96,10 +102,10 @@
 }
 ```
 
-### Дополнительные backend-события
+## Topic `media.worker` (backend-поток для `podcast_core`)
 
-В topic `media.worker` также публикуются сообщения для backend. Исходные сообщения
-`converted`, `error` и `deleted` сохраняются для существующих потребителей.
+В topic `media.worker` публикуются только backend-сообщения. Публичные `converted`,
+`error` и `deleted` вынесены в `media.worker.events` для существующих потребителей.
 
 Начало обработки:
 
@@ -126,9 +132,9 @@
 }
 ```
 
-`duration_seconds` содержит полную длительность исходного аудиофайла в секундах,
-а `audio_file_size` — размер исходного аудиофайла в байтах. Оба значения
-сериализуются как строки.
+`duration_seconds` содержит полную длительность исходного аудиофайла, **округлённую
+до целого числа секунд** (backend десериализует её как `Long`), а `audio_file_size` —
+размер исходного аудиофайла в байтах. Оба значения сериализуются как строки.
 
 Ошибка обработки:
 
@@ -142,9 +148,9 @@
 }
 ```
 
-## Topic `media.subtitle`
+## Topic `media.subtitle.request`
 
-Worker публикует это сообщение после успешной HLS-конвертации для входящего `media.uploaded` с `type=podcast_file`.
+Worker публикует это сообщение после успешной HLS-конвертации для входящего `media.uploaded` с `type=podcast_file`. Его потребляет `speech_service`.
 
 ```json
 {

@@ -129,7 +129,8 @@ impl BackendMediaWorkerEvent {
             object_id: podcast_id.to_string(),
             event: "processed",
             audio_url: Some(audio_url.to_string()),
-            duration_seconds: Some(duration_seconds.to_string()),
+            // backend ожидает целое число секунд (Long), поэтому округляем f64.
+            duration_seconds: Some((duration_seconds.round() as i64).to_string()),
             audio_file_size: Some(audio_file_size.to_string()),
             error: None,
             timestamp: Utc::now(),
@@ -150,8 +151,12 @@ impl BackendMediaWorkerEvent {
     }
 }
 
+/// Backend-события для podcast_core (start_processing/processed/processing_failed).
 const TOPIC_MEDIA_WORKER: &str = "media.worker";
-const TOPIC_SUBTITLE: &str = "media.subtitle";
+/// Публичный поток worker'а (converted/error/deleted) для внешних потребителей.
+const TOPIC_MEDIA_WORKER_EVENTS: &str = "media.worker.events";
+/// Запросы на генерацию субтитров (worker -> speech_service).
+const TOPIC_SUBTITLE_REQUEST: &str = "media.subtitle.request";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtitleRequestedEvent {
@@ -233,7 +238,7 @@ impl KafkaProducer {
 
         let converted_result = self
             .send_json_to_topic(
-                TOPIC_MEDIA_WORKER,
+                TOPIC_MEDIA_WORKER_EVENTS,
                 &file_id_key,
                 &event,
                 "media.worker.converted",
@@ -298,7 +303,7 @@ impl KafkaProducer {
         };
 
         let payload = serde_json::to_string(&event)?;
-        let record = FutureRecord::to(TOPIC_SUBTITLE)
+        let record = FutureRecord::to(TOPIC_SUBTITLE_REQUEST)
             .key(&file_id_key)
             .payload(&payload);
 
@@ -306,11 +311,11 @@ impl KafkaProducer {
             .send(record, Duration::from_secs(30))
             .await
             .map_err(|(err, _msg)| {
-                anyhow::anyhow!("Failed to send media.subtitle.requested: {}", err)
+                anyhow::anyhow!("Failed to send media.subtitle.request: {}", err)
             })?;
 
         info!(
-            "Published media.subtitle.requested (file_id={}, source={}/{}, language={}, num_speakers={:?})",
+            "Published media.subtitle.request (file_id={}, source={}/{}, language={}, num_speakers={:?})",
             file_id, source_bucket, source_object_key, language, num_speakers,
         );
 
@@ -333,7 +338,7 @@ impl KafkaProducer {
         };
 
         let payload = serde_json::to_string(&event)?;
-        let record = FutureRecord::to(TOPIC_MEDIA_WORKER)
+        let record = FutureRecord::to(TOPIC_MEDIA_WORKER_EVENTS)
             .key(&file_id_key)
             .payload(&payload);
 
@@ -360,7 +365,7 @@ impl KafkaProducer {
         };
 
         let payload = serde_json::to_string(&event)?;
-        let record = FutureRecord::to(TOPIC_MEDIA_WORKER)
+        let record = FutureRecord::to(TOPIC_MEDIA_WORKER_EVENTS)
             .key(&file_id_key)
             .payload(&payload);
 
@@ -434,5 +439,20 @@ mod tests {
         );
         assert_eq!(value["duration_seconds"], "2580");
         assert_eq!(value["audio_file_size"], "11232332");
+    }
+
+    #[test]
+    fn backend_processed_event_rounds_fractional_duration_to_long() {
+        // duration из ffprobe приходит как f64 (например 30.040816); backend ждёт Long,
+        // поэтому значение должно округляться до целого числа секунд.
+        let event = BackendMediaWorkerEvent::processed(
+            "11111111-1111-4111-8111-111111111111",
+            "/media/11111111-1111-4111-8111-111111111111/master.m3u8",
+            30.040816,
+            512,
+        );
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(value["duration_seconds"], "30");
     }
 }
