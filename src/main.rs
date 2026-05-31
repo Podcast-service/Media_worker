@@ -3,23 +3,26 @@ mod consumer;
 mod hls;
 mod kafka;
 mod loader_s3;
+mod metrics;
 mod pipeline;
 mod podcast_api;
 mod progress;
 mod storage;
+mod telemetry;
 
 use std::{sync::Arc, time::Duration};
 
 use api_doc::ApiDoc;
 use axum::{routing::get, Router};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{error, info};
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
+use tracing::{error, info, Level};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    let _telemetry = telemetry::init("media_worker");
 
     let cfg = loader_s3::Config::from_env().expect("S3 config: set S3_* env variables");
     let client = loader_s3::create_client(&cfg)
@@ -78,6 +81,10 @@ async fn main() {
             get(progress::progress_sse),
         )
         .layer(cors)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO)),
+        )
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8082".to_string());

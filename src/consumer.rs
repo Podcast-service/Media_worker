@@ -38,6 +38,7 @@ pub async fn run_media_consumer(
     while let Some(result) = stream.next().await {
         match result {
             Ok(msg) => {
+                crate::metrics::metrics().record_received();
                 handle_kafka_message(msg, &storage, &kafka, &progress).await;
             }
             Err(e) => {
@@ -70,6 +71,7 @@ fn create_consumer(brokers: &str) -> Result<StreamConsumer> {
     Ok(consumer)
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_kafka_message(
     msg: rdkafka::message::BorrowedMessage<'_>,
     storage: &Arc<dyn StorageBackend>,
@@ -77,12 +79,19 @@ async fn handle_kafka_message(
     progress: &ProgressMap,
 ) {
     let Some(payload) = decode_payload(&msg) else {
+        crate::metrics::metrics().record_processed("decode_error");
         return;
     };
 
     match parse_media_event(payload) {
-        Ok(event) => dispatch_media_event(event, storage, kafka, progress).await,
-        Err(e) => warn!("Failed to parse media event payload: {}", e),
+        Ok(event) => {
+            dispatch_media_event(event, storage, kafka, progress).await;
+            crate::metrics::metrics().record_processed("ok");
+        }
+        Err(e) => {
+            warn!("Failed to parse media event payload: {}", e);
+            crate::metrics::metrics().record_processed("parse_error");
+        }
     }
 }
 

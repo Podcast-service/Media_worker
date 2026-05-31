@@ -58,3 +58,14 @@ services:
       S3_REGION: ${S3_REGION:-ru-1}
       PODCAST_API_BASE_URL: ${PODCAST_API_BASE_URL:-}
       SUBTITLE_LANGUAGE: ${SUBTITLE_LANGUAGE:-ru}
+      OTEL_SERVICE_NAME: media_worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      DEPLOYMENT_ENV: ${DEPLOYMENT_ENV:-dev}
+    networks:
+      - default
+      - otel
+
+networks:
+  otel:
+    external: true
+    name: ot_collector_otel
