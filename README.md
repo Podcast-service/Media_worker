@@ -44,13 +44,14 @@ docker compose logs -f media-worker
 Сервис публикует:
 
 - topic: `media.worker`
-- topic: `media.subtitle` после успешной HLS-конвертации входящего `type=podcast_file`
+- topic: `media.subtitle.request` после успешной HLS-конвертации входящего `type=podcast_file`
 
 Входящее событие `media.uploaded` обрабатывается только при `type=podcast_file`. Оно должно содержать `object_id`, `url`, `size` и `content_type`. `url` должен быть S3 locator в формате `s3://<bucket>/<object_key>`.
 `object_id` используется как `file_id` и как `podcast_id`, поэтому должен быть UUID. События типов `avatar`, `podcast_cover` и `playlists` worker игнорирует.
 После конвертации `podcast_id` пробрасывается в событие `media.worker.converted`, чтобы backend мог связать HLS-результат с подкастом.
-Worker после успешной HLS-конвертации отправляет запрос в `media.subtitle` с S3-объектом аудиосегмента.
+Worker после успешной HLS-конвертации отправляет запрос в `media.subtitle.request` с S3-объектом аудиосегмента.
 Перед отправкой запроса субтитров worker делает публичный `GET {PODCAST_API_BASE_URL}/podcasts/{podcast_id}/speakers`, достает число спикеров и кладет его в поле `num_speakers`.
+Hostname в `PODCAST_API_BASE_URL` должен быть RFC-совместимым: используйте DNS alias вроде `podcast-core`, а не Docker-имя с `_` вроде `podcast_core`.
 
 HLS-объекты загружаются в S3 по префиксу:
 

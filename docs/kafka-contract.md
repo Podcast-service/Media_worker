@@ -4,7 +4,7 @@
 
 - Топик `media`: generic-события от `media_api`; `media_worker` обрабатывает только `type=podcast_file` + `event=uploaded`
 - Топик `media.worker`: исходящие события, публикуемые `media_worker`
-- Топик `media.subtitle`: запросы на генерацию субтитров, публикуемые `media_worker` после обработки `type=podcast_file`
+- Топик `media.subtitle.request`: запросы на генерацию субтитров, публикуемые `media_worker` после обработки `type=podcast_file`
 
 Поле `event` используется как discriminator и сериализуется в `snake_case`.
 
@@ -142,7 +142,7 @@
 }
 ```
 
-## Topic `media.subtitle`
+## Topic `media.subtitle.request`
 
 Worker публикует это сообщение после успешной HLS-конвертации для входящего `media.uploaded` с `type=podcast_file`.
 
@@ -165,4 +165,5 @@ Worker публикует это сообщение после успешной 
 - Генерация субтитров включена для всех обработанных `podcast_file` upload-событий.
 - Язык запроса субтитров берется из `SUBTITLE_LANGUAGE`, по умолчанию `ru`.
 - Число спикеров запрашивается публичным `GET {PODCAST_API_BASE_URL}/podcasts/{podcast_id}/speakers`; если API недоступен или `PODCAST_API_BASE_URL` не задан, `num_speakers` не отправляется.
+- Hostname в `PODCAST_API_BASE_URL` не должен содержать `_`; для Docker задайте RFC-совместимый alias, например `podcast-core`.
 - Для топика `media` поле `url` должно быть S3 locator в формате `s3://<bucket>/<object_key>`.

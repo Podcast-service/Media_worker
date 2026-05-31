@@ -26,6 +26,7 @@ impl PodcastApiConfig {
 
         let base_url = Url::parse(&base_url)
             .with_context(|| format!("failed to parse {BASE_URL_ENV}='{base_url}'"))?;
+        validate_hostname(&base_url)?;
         let timeout = Duration::from_secs(timeout_seconds_from_env());
 
         Ok(Some(Self { base_url, timeout }))
@@ -44,6 +45,18 @@ impl PodcastApiConfig {
         }
         Ok(url)
     }
+}
+
+fn validate_hostname(url: &Url) -> Result<()> {
+    let Some(host) = url.host_str() else {
+        anyhow::bail!("{BASE_URL_ENV} must include a hostname");
+    };
+    if host.contains('_') {
+        anyhow::bail!(
+            "{BASE_URL_ENV} hostname '{host}' contains '_'; configure an RFC-compliant DNS alias such as 'podcast-core'"
+        );
+    }
+    Ok(())
 }
 
 pub async fn fetch_speaker_count(podcast_id: &str) -> Result<Option<u32>> {
@@ -149,4 +162,26 @@ fn extract_speaker_count(value: &Value) -> Option<u32> {
 
 fn to_u32(value: u64) -> Option<u32> {
     u32::try_from(value).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_hostname_with_underscore_before_sending_http_request() {
+        let url = Url::parse("http://podcast_core:8083/podcast/v1").unwrap();
+
+        let error = validate_hostname(&url).unwrap_err();
+
+        assert!(error.to_string().contains("podcast_core"));
+        assert!(error.to_string().contains("podcast-core"));
+    }
+
+    #[test]
+    fn accepts_rfc_compliant_hostname() {
+        let url = Url::parse("http://podcast-core:8083/podcast/v1").unwrap();
+
+        validate_hostname(&url).unwrap();
+    }
 }

@@ -151,7 +151,7 @@ impl BackendMediaWorkerEvent {
 }
 
 const TOPIC_MEDIA_WORKER: &str = "media.worker";
-const TOPIC_SUBTITLE: &str = "media.subtitle";
+const TOPIC_SUBTITLE_REQUEST: &str = "media.subtitle.request";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtitleRequestedEvent {
@@ -278,7 +278,7 @@ impl KafkaProducer {
         Ok(())
     }
 
-    /// Публикует запрос на генерацию субтитров в media.subtitle
+    /// Публикует запрос на генерацию субтитров в media.subtitle.request
     pub async fn send_subtitle_requested(
         &self,
         file_id: Uuid,
@@ -298,7 +298,7 @@ impl KafkaProducer {
         };
 
         let payload = serde_json::to_string(&event)?;
-        let record = FutureRecord::to(TOPIC_SUBTITLE)
+        let record = FutureRecord::to(TOPIC_SUBTITLE_REQUEST)
             .key(&file_id_key)
             .payload(&payload);
 
