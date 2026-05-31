@@ -45,6 +45,7 @@ pub async fn run_pipeline(
     need_subtitle: bool,
     audio_url_file: String,
     original_format: String,
+    original_audio_file_size: usize,
     storage: Arc<dyn StorageBackend>,
     kafka: SharedKafkaProducer,
     progress: ProgressMap,
@@ -54,6 +55,13 @@ pub async fn run_pipeline(
 
     let source = SourceAudio::parse(audio_url_file, original_format)?;
     let temp_path = download_source_audio(file_id, &source, &storage).await?;
+    let original_duration_seconds = hls::get_duration(&temp_path).await;
+    if original_duration_seconds.is_none() {
+        warn!(
+            "Failed to get original audio duration for file_id={}, falling back to converted duration",
+            file_id
+        );
+    }
 
     match execute_pipeline_with_retries(
         file_id,
@@ -70,6 +78,8 @@ pub async fn run_pipeline(
                 &podcast_id,
                 need_subtitle,
                 &result,
+                original_duration_seconds.unwrap_or(result.duration),
+                original_audio_file_size,
                 &kafka,
                 &progress,
                 temp_path.as_path(),
@@ -510,6 +520,8 @@ async fn finalize_successful_pipeline(
     podcast_id: &str,
     need_subtitle: bool,
     result: &PipelineResult,
+    original_duration_seconds: f64,
+    original_audio_file_size: usize,
     kafka: &SharedKafkaProducer,
     progress: &ProgressMap,
     temp_path: &Path,
@@ -521,6 +533,8 @@ async fn finalize_successful_pipeline(
             &result.hls_path,
             result.duration,
             result.bitrates.clone(),
+            original_duration_seconds,
+            original_audio_file_size,
         )
         .await
     {

@@ -96,6 +96,10 @@ struct BackendMediaWorkerEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     audio_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    duration_seconds: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_file_size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     timestamp: DateTime<Utc>,
 }
@@ -107,17 +111,26 @@ impl BackendMediaWorkerEvent {
             object_id: file_id.to_string(),
             event: "start_processing",
             audio_url: None,
+            duration_seconds: None,
+            audio_file_size: None,
             error: None,
             timestamp: Utc::now(),
         }
     }
 
-    fn processed(podcast_id: &str, audio_url: &str) -> Self {
+    fn processed(
+        podcast_id: &str,
+        audio_url: &str,
+        duration_seconds: f64,
+        audio_file_size: usize,
+    ) -> Self {
         Self {
             object_type: "podcast_file_url",
             object_id: podcast_id.to_string(),
             event: "processed",
             audio_url: Some(audio_url.to_string()),
+            duration_seconds: Some(duration_seconds.to_string()),
+            audio_file_size: Some(audio_file_size.to_string()),
             error: None,
             timestamp: Utc::now(),
         }
@@ -129,6 +142,8 @@ impl BackendMediaWorkerEvent {
             object_id: file_id.to_string(),
             event: "processing_failed",
             audio_url: None,
+            duration_seconds: None,
+            audio_file_size: None,
             error: Some(error.to_string()),
             timestamp: Utc::now(),
         }
@@ -197,6 +212,8 @@ impl KafkaProducer {
         hls_path: &str,
         duration: f64,
         bitrates: Vec<u32>,
+        original_duration_seconds: f64,
+        original_audio_file_size: usize,
     ) -> Result<()> {
         let file_id_key = file_id.to_string();
         let event = MediaWorkerEvent::Converted {
@@ -207,7 +224,12 @@ impl KafkaProducer {
             bitrates,
             converted_at: Utc::now(),
         };
-        let backend_event = BackendMediaWorkerEvent::processed(podcast_id, hls_path);
+        let backend_event = BackendMediaWorkerEvent::processed(
+            podcast_id,
+            hls_path,
+            original_duration_seconds,
+            original_audio_file_size,
+        );
 
         let converted_result = self
             .send_json_to_topic(
@@ -399,6 +421,8 @@ mod tests {
         let event = BackendMediaWorkerEvent::processed(
             "11111111-1111-4111-8111-111111111111",
             "/media/11111111-1111-4111-8111-111111111111/master.m3u8",
+            2580.0,
+            11232332,
         );
         let value = serde_json::to_value(event).unwrap();
 
@@ -408,5 +432,7 @@ mod tests {
             value["audio_url"],
             "/media/11111111-1111-4111-8111-111111111111/master.m3u8"
         );
+        assert_eq!(value["duration_seconds"], "2580");
+        assert_eq!(value["audio_file_size"], "11232332");
     }
 }

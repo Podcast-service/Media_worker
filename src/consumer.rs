@@ -230,6 +230,7 @@ async fn handle_uploaded(
             need_subtitle,
             url,
             content_type,
+            size,
             storage,
             kafka.clone(),
             progress,
