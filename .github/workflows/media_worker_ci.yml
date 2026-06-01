@@ -1,4 +1,4 @@
-name: Media worker CI/CD
+name: Media Worker CI/CD
 
 on:
   pull_request:
@@ -14,18 +14,42 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Build check
-        run: docker build -t ghcr.io/podcast-service/media_worker:pr-${{ github.event.pull_request.number }} .
+        run: |
+          docker build --no-cache -t ghcr.io/podcast-service/media_worker:pr-${{ github.event.pull_request.number }} .
+          docker image rm ghcr.io/podcast-service/media_worker:pr-${{ github.event.pull_request.number }}
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
 
   deploy:
     if: github.event.pull_request.merged == true
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set SHA tag
         id: vars
         run: echo "SHA=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       - name: Login to GHCR
         run: |
