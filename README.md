@@ -21,6 +21,10 @@ SUBTITLE_LANGUAGE=ru
 
 `S3_CREATE_BUCKET=true` можно использовать только если окружение должно создавать бакет автоматически. Для managed S3 бакет обычно уже создан инфраструктурой.
 
+В backend-событии `media.worker/processed` worker публикует `audio_url` в
+формате `https://s3.twcstorage.ru/<HLS_BUCKET>/media/<file_id>/master.m3u8`.
+Для доступа к URL без авторизации бакет `HLS_BUCKET` должен быть публичным.
+
 ## Запуск
 
 ```bash

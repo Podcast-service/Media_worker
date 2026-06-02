@@ -221,6 +221,7 @@ impl KafkaProducer {
         file_id: Uuid,
         podcast_id: &str,
         hls_path: &str,
+        hls_public_url: &str,
         duration: f64,
         bitrates: Vec<u32>,
         original_duration_seconds: f64,
@@ -237,7 +238,7 @@ impl KafkaProducer {
         };
         let backend_event = BackendMediaWorkerEvent::processed(
             podcast_id,
-            hls_path,
+            hls_public_url,
             original_duration_seconds,
             original_audio_file_size,
         );
@@ -476,7 +477,7 @@ mod tests {
     fn backend_processed_event_uses_backend_contract() {
         let event = BackendMediaWorkerEvent::processed(
             "11111111-1111-4111-8111-111111111111",
-            "/media/11111111-1111-4111-8111-111111111111/master.m3u8",
+            "https://s3.twcstorage.ru/4c5face5-544c-4bc2-a2e0-57a24d243af3/media/11111111-1111-4111-8111-111111111111/master.m3u8",
             2580.0,
             11232332,
         );
@@ -486,7 +487,7 @@ mod tests {
         assert_eq!(value["event"], "processed");
         assert_eq!(
             value["audio_url"],
-            "/media/11111111-1111-4111-8111-111111111111/master.m3u8"
+            "https://s3.twcstorage.ru/4c5face5-544c-4bc2-a2e0-57a24d243af3/media/11111111-1111-4111-8111-111111111111/master.m3u8"
         );
         assert_eq!(value["duration_seconds"], "2580");
         assert_eq!(value["audio_file_size"], "11232332");
@@ -498,7 +499,7 @@ mod tests {
         // поэтому значение должно округляться до целого числа секунд.
         let event = BackendMediaWorkerEvent::processed(
             "11111111-1111-4111-8111-111111111111",
-            "/media/11111111-1111-4111-8111-111111111111/master.m3u8",
+            "https://s3.twcstorage.ru/4c5face5-544c-4bc2-a2e0-57a24d243af3/media/11111111-1111-4111-8111-111111111111/master.m3u8",
             30.040816,
             512,
         );

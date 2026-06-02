@@ -96,7 +96,7 @@ Backend-поток для `podcast_core`. В этот топик не публи
   "object_type": "podcast_file_url",
   "object_id": "11111111-1111-1111-1111-111111111111",
   "event": "processed",
-  "audio_url": "/media/11111111-1111-1111-1111-111111111111/master.m3u8",
+  "audio_url": "https://s3.twcstorage.ru/4c5face5-544c-4bc2-a2e0-57a24d243af3/media/11111111-1111-1111-1111-111111111111/master.m3u8",
   "duration_seconds": "2580",
   "audio_file_size": "11232332",
   "timestamp": "2026-04-07T12:01:30Z"
@@ -106,6 +106,9 @@ Backend-поток для `podcast_core`. В этот топик не публи
 `duration_seconds` содержит полную длительность исходного аудиофайла,
 округленную до целого числа секунд. `duration_seconds` и `audio_file_size`
 сериализуются как строки для совместимости с backend.
+`audio_url` содержит публичный абсолютный URL HLS-плейлиста в формате
+`https://s3.twcstorage.ru/<HLS_BUCKET>/media/<file_id>/master.m3u8`.
+Бакет `HLS_BUCKET` должен разрешать публичное чтение объектов.
 
 ### `processing_failed`
 
