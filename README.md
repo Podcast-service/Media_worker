@@ -1,6 +1,6 @@
 # Media_worker
 
-`media_worker` слушает Kafka topic `media`, обрабатывает входящие аудиофайлы через `ffmpeg`, загружает HLS-артефакты в S3-compatible storage и публикует результаты в Kafka.
+`media_worker` слушает Kafka topic `media`, обрабатывает входящие аудиофайлы через `ffmpeg`, загружает HLS-артефакты в S3-compatible storage и публикует результаты в Kafka...
 
 ## S3
 
