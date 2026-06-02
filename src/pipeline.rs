@@ -18,6 +18,7 @@ use crate::{
 };
 
 const DEFAULT_HLS_BUCKET: &str = "4c5face5-544c-4bc2-a2e0-57a24d243af3";
+const HLS_PUBLIC_BASE_URL: &str = "https://s3.twcstorage.ru";
 const MAX_RETRIES_ENV: &str = "PIPELINE_MAX_RETRIES";
 const DEFAULT_MAX_RETRIES: u32 = 3;
 const LOUDNORM_TARGET_I: &str = "-16";
@@ -33,6 +34,7 @@ const OVERWRITE_OUTPUT_FLAG: &str = "-y";
 
 pub struct PipelineResult {
     pub hls_path: String,
+    pub hls_public_url: String,
     pub hls_bucket: String,
     pub subtitle_source_object_key: Option<String>,
     pub duration: f64,
@@ -427,8 +429,10 @@ async fn upload_hls_stage(
         return Err(err);
     }
 
+    let hls_object_key = format!("media/{}/{}", file_id, hls_output.playlist_name);
     let result = PipelineResult {
-        hls_path: format!("/media/{}/{}", file_id, hls_output.playlist_name),
+        hls_path: format!("/{hls_object_key}"),
+        hls_public_url: build_hls_public_url(&hls_bucket, &hls_object_key),
         hls_bucket: hls_bucket.clone(),
         subtitle_source_object_key: select_subtitle_source_object_key(file_id, &hls_output).await?,
         duration: hls_output.duration_secs.unwrap_or(0.0),
@@ -463,6 +467,15 @@ fn hls_bucket() -> String {
         .or_else(|| std::env::var("S3_BUCKET").ok())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_HLS_BUCKET.to_string())
+}
+
+fn build_hls_public_url(bucket: &str, object_key: &str) -> String {
+    format!(
+        "{}/{}/{}",
+        HLS_PUBLIC_BASE_URL,
+        bucket.trim_matches('/'),
+        object_key.trim_start_matches('/'),
+    )
 }
 
 async fn select_subtitle_source_object_key(
@@ -531,6 +544,7 @@ async fn finalize_successful_pipeline(
             file_id,
             podcast_id,
             &result.hls_path,
+            &result.hls_public_url,
             result.duration,
             result.bitrates.clone(),
             original_duration_seconds,
@@ -737,5 +751,23 @@ async fn cleanup_temp_path(path: &Path) {
 
     if let Err(e) = tokio::fs::remove_file(path).await {
         debug!("Failed to cleanup temp file {}: {}", path.display(), e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_public_hls_url_for_timeweb_storage() {
+        let url = build_hls_public_url(
+            "4c5face5-544c-4bc2-a2e0-57a24d243af3",
+            "/media/11111111-1111-4111-8111-111111111111/master.m3u8",
+        );
+
+        assert_eq!(
+            url,
+            "https://s3.twcstorage.ru/4c5face5-544c-4bc2-a2e0-57a24d243af3/media/11111111-1111-4111-8111-111111111111/master.m3u8"
+        );
     }
 }
