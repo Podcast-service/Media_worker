@@ -56,7 +56,7 @@ docker compose logs -f media-worker
 HLS-объекты загружаются в S3 по префиксу:
 
 ```text
-media/<file_id>/
+media/<file_id>/ 
 ```
 
 
